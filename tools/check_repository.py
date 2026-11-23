@@ -32,7 +32,7 @@ def main():
     parser=argparse.ArgumentParser();parser.add_argument('--history',action='store_true');args=parser.parse_args()
     findings=[];blobs={};paths=set()
     if args.history:
-        for commit in git('rev-list','--all').decode().splitlines():
+        for commit in git('rev-list','--exclude=refs/stash','--all').decode().splitlines():
             for row in git('ls-tree','-r','-z',commit).split(b'\0'):
                 if not row:continue
                 info,name=row.split(b'\t',1);mode,kind,oid=info.split();name=name.decode()

@@ -66,6 +66,9 @@ ALLOWED_FILES = {
     'package-lock.json', 'playwright.config.ts', 'playwright.electron.config.ts', 'tsconfig.json',
     'vite.capture.config.ts', 'vite.main.config.ts', 'vite.renderer.config.ts')}
 ALLOWED_PREFIXES = ('apps/desktop/src/', 'apps/desktop/tests/', '.github/workflows/', '.githooks/')
+# The app's source and tests hold code only.
+DESKTOP_CODE_DIRS = ('apps/desktop/src/', 'apps/desktop/tests/')
+DESKTOP_CODE_SUFFIXES = ('.ts', '.tsx', '.css', '.html', '.cjs', '.json')
 ANY_LEVEL_DENIED = {'private', 'datasets'}
 SECRET_FILE_NAMES = {'.npmrc', '.netrc', '.pypirc', '.envrc', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519'}
 
@@ -262,6 +265,8 @@ def layout_findings(name, mode=b'100644'):
         allowed = name in ALLOWED_FILES or name.startswith(ALLOWED_PREFIXES)
     if not allowed:
         found.append('path outside the public layout')
+    elif name.startswith(DESKTOP_CODE_DIRS) and not name.endswith(DESKTOP_CODE_SUFFIXES):
+        found.append('file type outside the public layout')
     lowered = [part.lower() for part in parts]
     if any(part in ANY_LEVEL_DENIED for part in lowered):
         found.append('private data path')
