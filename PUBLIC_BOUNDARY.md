@@ -31,6 +31,6 @@ This repository holds the Xenon Writing desktop app's code, its tests and generi
 It runs:
 
 - in the hooks installed by `tools/install_hooks.sh`: `pre-commit` and `pre-merge-commit` (the staged files and identity, with the repository guard), `commit-msg`, and `pre-push` (the full history);
-- as the `public-boundary` CI job on every push and pull request. On a pull request, `main`'s copy of the scanner checks it too. The job is meant to be required on `main`; until a ruleset enforces it (GitHub offers one here once the repository is public), merging only after it passes is a rule people follow, not one GitHub enforces.
+- as the `public-boundary` CI job on every push and pull request. On a pull request, `main`'s copy of the scanner checks it too. A ruleset on `main` requires the job with no bypass, keeps history linear, and blocks force-pushes and deletion.
 
 The check is heuristic: passing it is necessary, not sufficient. Review every change against the lists above. If private material is found after it was pushed, stop and tell the owner. Rewriting history and rotating anything exposed is the owner's call.

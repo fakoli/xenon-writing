@@ -17,7 +17,7 @@ Commit dates carry your time zone. To leave it out, commit with `TZ=UTC`.
 
 1. Branch from `main` and keep each pull request to one change.
 2. Run the checks in [README.md](README.md). Tests use fictional text and generated audio only; no live service, microphone or network.
-3. Open a pull request. The `public-boundary` job and the desktop jobs must pass. (`public-boundary` is meant to be required on `main`; until a ruleset enforces it, the merge step below is where that is honored.)
+3. Open a pull request. The `public-boundary` job and the desktop jobs must pass; `main` requires `public-boundary`.
 4. Get an independent review of the change, including a check against [PUBLIC_BOUNDARY.md](PUBLIC_BOUNDARY.md). Pull request titles and descriptions are not scanned, so keep private material out of them too.
 
 A new top-level file, tool or test file must first be added to the layout allowlist in `tools/check_public_boundary.py`. Land that in its own pull request, then add the file in the next one; `main`'s scanner checks every pull request.

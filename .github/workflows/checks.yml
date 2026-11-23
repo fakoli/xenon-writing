@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   public-boundary:
-    # Meant to be required on main. Scans the tree and every commit, tag and ref: paths, contents,
+    # Required on main by a ruleset. Scans the tree and every commit, tag and ref: paths, contents,
     # messages and identities. The denied-term list comes from the XENON_BOUNDARY_TERMS secret, given only
     # to the two scanner steps; without it, or with a different number of terms, the check fails (pull
     # requests from forks get no secrets, so they cannot pass). Update the count when the list changes.
