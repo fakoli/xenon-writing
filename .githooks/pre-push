@@ -1,0 +1,10 @@
+#!/bin/sh
+# Before every push: the full public boundary check (every commit, tag and
+# ref except the stash, and the ref names being pushed), then the repository guard
+# over all history. This catches commits that no pre-commit hook saw:
+# cherry-picks, rebases, merges and patches.
+# Installed by tools/install_hooks.sh. Do not bypass it with --no-verify.
+set -e
+top="$(git rev-parse --show-toplevel)"
+python3 "$top/tools/check_public_boundary.py" --history --push-refs
+python3 "$top/tools/check_repository.py" --history

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Before every commit: the public boundary check on what is staged (paths,
+# contents and the commit's author and committer identity), then the
+# repository guard (generated files, binaries, key and token patterns).
+# Installed by tools/install_hooks.sh. Do not bypass it with --no-verify.
+set -e
+top="$(git rev-parse --show-toplevel)"
+python3 "$top/tools/check_public_boundary.py" --staged
+python3 "$top/tools/check_repository.py"

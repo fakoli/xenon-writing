@@ -1,0 +1,196 @@
+/*
+ * Design tokens (UI review, 2026-11-21; owner chose a hand-written CSS layer
+ * over a component library). Surfaces and text keep the system colors
+ * (Canvas, CanvasText, ButtonFace, Field) so they follow macOS; the
+ * semantic colors below are explicit, with contrast measured on the light
+ * (#fff) and dark (#121212) page backgrounds. Layout values start from the
+ * interaction design (proposed).
+ */
+:root {
+  --text-scale: 1;
+  font-size: calc(var(--text-scale) * 100%);
+  color-scheme: light dark;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  /*
+   * Keyboard focus ring: Chromium's own default ring colors, which measure
+   * 5.98:1 on the light background and 10.76:1 on the dark one (WCAG 1.4.11
+   * needs 3:1). Not Highlight, a translucent selection color (1.49:1 on
+   * white), and not AccentColor, which follows the macOS accent and can be
+   * yellow or graphite.
+   */
+  --focus-ring: #005fcc;
+  /* The primary action's fill and label: 5.98:1. */
+  --accent: #005fcc;
+  --on-accent: #fff;
+  /* Status and emphasis text on the page: 5.91, 6.86, 6.34 and 6.48:1. */
+  --danger: #c41e1e;
+  --warning: #8a4a00;
+  --success: #166e34;
+  --muted: #5e5e5e;
+
+  /* Spacing and type, in rem so they grow with A+. */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --text-body: 1.125rem; /* 18px at default scale */
+  --text-editor: 1.25rem; /* 20px */
+  --radius: 4px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --focus-ring: #99c8ff; /* 10.76:1 */
+    --accent: #99c8ff; /* with a black label: 12.06:1 */
+    --on-accent: #000;
+    --danger: #ff7878; /* 7.32:1 */
+    --warning: #ffc470; /* 11.94:1 */
+    --success: #7dd496; /* 10.46:1 */
+    --muted: #b0b0b0; /* 8.64:1 */
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-size: var(--text-body);
+  line-height: 1.5;
+  background: Canvas;
+  color: CanvasText;
+}
+
+/*
+ * Gutters grow with A+ but never past 5% of the window, so large text keeps its column on a narrow window.
+ * On a very wide window the content stops at 84rem (about 74 characters a line per pane) and centers.
+ */
+.app {
+  padding: clamp(16px, var(--space-4), 5vw);
+  display: grid;
+  gap: var(--space-3);
+  max-inline-size: 84rem;
+  margin-inline: auto;
+}
+
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
+.toolbar h1 { font-size: var(--text-editor); margin: 0; }
+.route-summary { margin: 0; flex: 1 1 auto; }
+.text-size { display: flex; gap: var(--space-2); }
+
+.panes { display: grid; gap: var(--space-3); grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 920px) {
+  .panes { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+
+/* Each pane keeps about 72 characters a line, also in the one-column layout below 920px. */
+.pane { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; max-inline-size: 41rem; }
+.pane h2 { font-size: var(--text-body); margin: 0; }
+/* Group each label with its own field: more room above a label than between it and its field. */
+.pane > label,
+.pane > .preview-label { margin-block-start: var(--space-2); }
+.pane p { margin: 0; }
+
+.editor,
+.preview {
+  font: inherit;
+  font-size: var(--text-editor);
+  line-height: 1.5;
+  width: 100%;
+  padding: clamp(8px, var(--space-2), 2.5vw);
+  border: 1px solid GrayText;
+  border-radius: var(--radius);
+  overflow-wrap: anywhere;
+}
+.editor { resize: vertical; background: Field; color: FieldText; }
+.preview { min-height: 12em; white-space: pre-wrap; }
+.preview .empty { font-style: italic; }
+
+.actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+
+button {
+  font: inherit;
+  padding: 6px 14px;
+  border-radius: var(--radius);
+  border: 1px solid ButtonBorder;
+  background: ButtonFace;
+  color: ButtonText;
+  cursor: pointer;
+}
+/* A destructive action (Discard): outlined in the danger color on the page fill. */
+button.danger {
+  background: Canvas;
+  color: var(--danger);
+  border-color: var(--danger);
+}
+/* Set Discard apart from Stop: a trailing gap, which vanishes if Discard wraps to the next line. */
+#record-stop { margin-inline-end: var(--space-2); }
+/* The one primary action per pane: Rewrite, and Copy draft. */
+button.primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+/*
+ * Unavailable buttons look 60% faded, but by mixing their colors toward the
+ * page rather than with opacity: opacity would also fade the focus ring, and
+ * Rewrite keeps focus while it is unavailable.
+ */
+button:disabled,
+button[aria-disabled='true'] {
+  cursor: not-allowed;
+  background: color-mix(in srgb, ButtonFace 60%, Canvas);
+  color: color-mix(in srgb, ButtonText 60%, Canvas);
+  border-color: color-mix(in srgb, ButtonBorder 60%, Canvas);
+}
+
+:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
+
+/*
+ * Status lines: warnings and successes in their own colors; the icon and words still say which.
+ * Warnings are also bolder, since with red-green color blindness the two colors look alike.
+ */
+.status[data-kind='warning'] { color: var(--warning); font-weight: 600; }
+.status[data-kind='success'] { color: var(--success); }
+
+/* Packet B part 2: audio input and the transcript candidate. */
+.audio { display: grid; gap: var(--space-2); }
+.candidate {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  /* A structural border, like the explanation's, so it never reads as focus. */
+  border: 2px solid CanvasText;
+  border-radius: var(--radius);
+}
+.candidate h3 { font-size: var(--text-body); margin: 0; }
+.candidate-text { font-size: var(--text-editor); white-space: pre-wrap; overflow-wrap: anywhere; }
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Packet B part 3: the recorder. */
+.recorder { display: grid; gap: var(--space-2); }
+/* Check again is sized to its label, not stretched across the grid. */
+.recorder > button { justify-self: start; }
+/* While the microphone is live: a bar and the status dot in the recording color, and a bolder timer. */
+.recorder[data-recording='true'] {
+  border-inline-start: 4px solid var(--danger);
+  padding-inline-start: var(--space-3);
+}
+.recorder[data-recording='true'] .timer { font-weight: 600; }
+.rec-dot { color: var(--danger); }
+.explain {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 2px solid CanvasText;
+  border-radius: var(--radius);
+}
+.explain h3 { font-size: var(--text-body); margin: 0; }
+.timer { font-variant-numeric: tabular-nums; font-size: var(--text-editor); margin: 0; }

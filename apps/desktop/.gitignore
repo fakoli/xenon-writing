@@ -1,0 +1,5 @@
+.vite/
+.e2e-dist/
+out/
+test-results/
+playwright-report/

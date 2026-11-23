@@ -1,0 +1,36 @@
+# Public boundary
+
+This repository holds the Xenon Writing desktop app's code, its tests and generic documentation. Everything else about the project stays in private repositories.
+
+## What may live here
+
+- The app's source, build and CI configuration.
+- Tests, with fictional text and generated audio fixtures.
+- Generic documentation: how to build, run and contribute, and the app's behavior and design decisions stated in plain terms.
+
+## What never may
+
+- Personal writing or audio, or anything derived from it.
+- The writing pipeline, and any training, evaluation or personalization code.
+- Design documents and planning notes, and pointers to them: their paths, short names or numbers, decision or finding numbers from them, and pull request numbers from other repositories.
+- Machine names, account identifiers and personal email addresses.
+- Links to or names of private repositories.
+- Credentials, keys and tokens, `.env` and other secret files, datasets, model weights and generated outputs.
+
+## How it is enforced
+
+`tools/check_public_boundary.py` checks:
+
+- **Layout:** every path must be in the public layout, an allowlist in the script: named root, tool, test and app config files, plus `apps/desktop/src/`, `apps/desktop/tests/`, `.github/workflows/` and `.githooks/`. Anything else fails, including the same name in another letter case.
+- **Denied terms** in contents, file and ref names, messages and identities. The terms are not stored here. CI reads them from the `XENON_BOUNDARY_TERMS` Actions secret; a clone reads them from a local file outside the repository (see CONTRIBUTING.md). The check refuses to run without them.
+- **Secrets:** the key and token patterns in `tools/check_repository.py`.
+- **Host details:** home-directory paths, private network addresses and local host names.
+- **Dangling pointers:** a reference to a file or folder that is not in the tree.
+- **Identities:** only `fakoli <fakoli@users.noreply.github.com>` may author, commit or tag. Commits are unsigned, and every ref must lead to a commit. Message trailers such as `Co-Authored-By` are not identities and are allowed.
+
+It runs:
+
+- in the hooks installed by `tools/install_hooks.sh`: `pre-commit` and `pre-merge-commit` (the staged files and identity, with the repository guard), `commit-msg`, and `pre-push` (the full history);
+- as the `public-boundary` CI job on every push and pull request. On a pull request, `main`'s copy of the scanner checks it too. The job is meant to be required on `main`; until a ruleset enforces it (GitHub offers one here once the repository is public), merging only after it passes is a rule people follow, not one GitHub enforces.
+
+The check is heuristic: passing it is necessary, not sufficient. Review every change against the lists above. If private material is found after it was pushed, stop and tell the owner. Rewriting history and rotating anything exposed is the owner's call.

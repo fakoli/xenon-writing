@@ -1,0 +1,4 @@
+#!/bin/sh
+# Public boundary check on the commit message.
+# Installed by tools/install_hooks.sh. Do not bypass it with --no-verify.
+exec python3 "$(git rev-parse --show-toplevel)/tools/check_public_boundary.py" --message-file "$1"

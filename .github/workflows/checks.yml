@@ -1,0 +1,110 @@
+name: Source checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  public-boundary:
+    # Meant to be required on main. Scans the tree and every commit, tag and ref: paths, contents,
+    # messages and identities. The denied-term list comes from the XENON_BOUNDARY_TERMS secret, given only
+    # to the two scanner steps; without it, or with a different number of terms, the check fails (pull
+    # requests from forks get no secrets, so they cannot pass). Update the count when the list changes.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          # On a pull request, scan the branch's own commits, not GitHub's synthetic merge commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - run: python tools/check_public_boundary.py
+        env:
+          XENON_BOUNDARY_TERMS: ${{ secrets.XENON_BOUNDARY_TERMS }}
+          XENON_BOUNDARY_TERM_COUNT: '13'
+      # A pull request could weaken the scanner it ships, so main's scanner checks it too. (The same pull
+      # request could also edit this step; only review and a ruleset stop that.)
+      - if: github.event_name == 'pull_request'
+        env:
+          XENON_BOUNDARY_TERMS: ${{ secrets.XENON_BOUNDARY_TERMS }}
+          XENON_BOUNDARY_TERM_COUNT: '13'
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/base/tools"
+          for f in check_public_boundary.py check_repository.py; do
+            git show "$BASE_SHA:tools/$f" > "$RUNNER_TEMP/base/tools/$f"
+          done
+          python "$RUNNER_TEMP/base/tools/check_public_boundary.py" --root "$GITHUB_WORKSPACE"
+      - run: python tools/check_repository.py --history
+      - run: python -m unittest discover -s tests -v
+  desktop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/desktop
+    env:
+      # Unit, typecheck and renderer e2e do not need the Electron binary.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - run: node --version && npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # Chromium's system packages come from Ubuntu's apt mirrors; retry transient network failures.
+      - run: for attempt in 1 2 3; do npx playwright install --with-deps chromium && exit 0; echo "browser install attempt $attempt failed"; sleep 15; done; exit 1
+      - run: npm run test:e2e
+  desktop-electron:
+    # Pinned: the AppArmor user-namespace setting below is specific to this image.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      # Installs the pinned Electron runtime binary.
+      - run: node --version && npm ci
+      # Chromium's OS sandbox needs unprivileged user namespaces, which Ubuntu's AppArmor restricts by default.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # The packager downloads Electron's archive for the target; retry transient network failures.
+      - run: for attempt in 1 2 3; do npx electron-forge package && exit 0; echo "package attempt $attempt failed"; sleep 15; done; exit 1
+      # The offline test: the built app in a real Electron window under a virtual display.
+      - run: xvfb-run -a npx playwright test -c playwright.electron.config.ts
+  desktop-electron-macos:
+    # The shipping target: macOS on Apple silicon (this runner image is arm64). Runs the offline Electron
+    # test, including the capture tests, which use Chromium's fake input device and a stubbed permission state.
+    runs-on: macos-15
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      # Installs the pinned Electron runtime binary.
+      - run: node --version && npm ci
+      # The packager downloads Electron's archive for the target; retry transient network failures.
+      - run: for attempt in 1 2 3; do npx electron-forge package && exit 0; echo "package attempt $attempt failed"; sleep 15; done; exit 1
+      - run: npx playwright test -c playwright.electron.config.ts

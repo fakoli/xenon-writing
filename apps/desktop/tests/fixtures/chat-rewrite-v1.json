@@ -1,0 +1,776 @@
+{
+  "schema": "xenon.chat-rewrite-vectors/v1",
+  "note": "Fictional text only. The desktop chat-rewrite adapter (apps/desktop/src/main/providers/chatRewrite.ts) sends request bodies exactly like these, with the route identity as the model and the job ID as the Idempotency-Key, and accepts or refuses replies as each expects; a reply vector's model is the route identity it is read against. The writing pipeline's own contract test sends these requests through its chat view, checks its replies have the pipeline-synthetic shape, and checks pipelineLimits.",
+  "pipelineLimits": {
+    "userChars": 16000,
+    "systemChars": 4000,
+    "maxTokens": 8192,
+    "identifierPattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+  },
+  "requests": [
+    {
+      "name": "with-steering",
+      "model": "synthetic-writing",
+      "maxTokens": 512,
+      "transcript": "Synthetic note: the proposal is ready for Friday.",
+      "steering": "Use one sentence.",
+      "body": {
+        "model": "synthetic-writing",
+        "stream": false,
+        "temperature": 0,
+        "max_tokens": 512,
+        "messages": [
+          {
+            "role": "system",
+            "content": "Rewrite the transcript. Preserve all facts, names, numbers, dates, negations and commitments. Apply the steering only when it does not change meaning. Return only the rewritten text. Do not claim personalization. Steering: Use one sentence."
+          },
+          {
+            "role": "user",
+            "content": "Synthetic note: the proposal is ready for Friday."
+          }
+        ]
+      }
+    },
+    {
+      "name": "empty-steering",
+      "model": "synthetic-writing",
+      "maxTokens": 512,
+      "transcript": "Synthetic note: meet at noon.",
+      "steering": "",
+      "body": {
+        "model": "synthetic-writing",
+        "stream": false,
+        "temperature": 0,
+        "max_tokens": 512,
+        "messages": [
+          {
+            "role": "system",
+            "content": "Rewrite the transcript. Preserve all facts, names, numbers, dates, negations and commitments. Apply the steering only when it does not change meaning. Return only the rewritten text. Do not claim personalization. Steering: "
+          },
+          {
+            "role": "user",
+            "content": "Synthetic note: meet at noon."
+          }
+        ]
+      }
+    }
+  ],
+  "replies": [
+    {
+      "name": "pipeline-synthetic",
+      "mode": "fixture",
+      "model": "synthetic-writing",
+      "status": 200,
+      "contentType": "application/json",
+      "body": {
+        "id": "chatcmpl-example",
+        "created": 0,
+        "model": "synthetic-writing",
+        "writing_pipeline": {
+          "synthetic_only": true,
+          "personalized": false,
+          "state": "completed_synthetic",
+          "idempotency_key": "example-key",
+          "advisory_options_ignored": [
+            "max_tokens",
+            "temperature"
+          ]
+        },
+        "object": "chat.completion",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "[SYNTHETIC REWRITE ONLY] Synthetic note: the proposal is ready for Friday."
+            },
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      "expect": {
+        "text": "[SYNTHETIC REWRITE ONLY] Synthetic note: the proposal is ready for Friday."
+      }
+    },
+    {
+      "name": "pipeline-synthetic-charset",
+      "mode": "fixture",
+      "model": "synthetic-writing",
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "body": {
+        "id": "chatcmpl-example",
+        "created": 0,
+        "model": "synthetic-writing",
+        "writing_pipeline": {
+          "synthetic_only": true,
+          "personalized": false,
+          "state": "completed_synthetic",
+          "idempotency_key": "example-key",
+          "advisory_options_ignored": [
+            "max_tokens",
+            "temperature"
+          ]
+        },
+        "object": "chat.completion",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "[SYNTHETIC REWRITE ONLY] Synthetic note: the proposal is ready for Friday."
+            },
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      "expect": {
+        "text": "[SYNTHETIC REWRITE ONLY] Synthetic note: the proposal is ready for Friday."
+      }
+    },
+    {
+      "name": "base-service",
+      "mode": "base",
+      "model": "example-base-model",
+      "status": 200,
+      "contentType": "application/json",
+      "body": {
+        "id": "chatcmpl-example",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "example-base-model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "The proposal is ready for Friday."
+            },
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      "expect": {
+        "text": "The proposal is ready for Friday."
+      }
+    },
+    {
+      "name": "fixture-route-without-pipeline-mark",
+      "mode": "fixture",
+      "model": "example-base-model",
+      "status": 200,
+      "contentType": "application/json",
+      "body": {
+        "id": "chatcmpl-example",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "example-base-model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "The proposal is ready for Friday."
+            },
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      "expect": {
+        "code": "provider_mismatch"
+      }
+    },
+    {
+      "name": "synthetic-reply-on-base-route",
+      "mode": "base",
+      "model": "synthetic-writing",
+      "status": 200,
+      "contentType": "application/json",
+      "body": {
+        "id": "chatcmpl-example",
+        "created": 0,
+        "model": "synthetic-writing",
+        "writing_pipeline": {
+          "synthetic_only": true,
+          "personalized": false,
+          "state": "completed_synthetic",
+          "idempotency_key": "example-key",
+          "advisory_options_ignored": [
+            "max_tokens",
+            "temperature"
+          ]
+        },
+        "object": "chat.completion",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "[SYNTHETIC REWRITE ONLY] Synthetic note: the proposal is ready for Friday."
+            },
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      "expect": {
+        "code": "provider_mismatch"
+      }
+    },
+    {
+      "name": "personalized-claim",
+      "mode": "fixture",
+      "model": "synthetic-writing",
+      "status": 200,
+      "contentType": "application/json",
+      "body": {
+        "id": "chatcmpl-example",
+        "created": 0,
+        "model": "synthetic-writing",
+        "writing_pipeline": {
+          "synthetic_only": true,
+          "personalized": true,
+          "state": "completed_synthetic",
+          "idempotency_key": "example-key",
+          "advisory_options_ignored": [
+            "max_tokens",
+            "temperature"
+          ]
+        },
+        "object": "chat.completion",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "[SYNTHETIC REWRITE ONLY] Synthetic note: the proposal is ready for Friday."
+            },
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      "expect": {
+        "code": "provider_mismatch"
+      }
+    },
+    {
+      "name": "other-model",
+      "mode": "base",
+      "model": "example-base-model",
+      "status": 200,
+      "contentType": "application/json",
+      "body": {
+        "id": "chatcmpl-example",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "another-model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "The proposal is ready for Friday."
+            },
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      "expect": {
+        "code": "provider_mismatch"
+      }
+    },
+    {
+      "name": "truncated",
+      "mode": "base",
+      "model": "example-base-model",
+      "status": 200,
+      "contentType": "application/json",
+      "body": {
+        "id": "chatcmpl-example",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "example-base-model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "The proposal is"
+            },
+            "finish_reason": "length"
+          }
+        ]
+      },
+      "expect": {
+        "code": "invalid_response"
+      }
+    },
+    {
+      "name": "two-choices",
+      "mode": "base",
+      "model": "example-base-model",
+      "status": 200,
+      "contentType": "application/json",
+      "body": {
+        "id": "chatcmpl-example",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "example-base-model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "A"
+            },
+            "finish_reason": "stop"
+          },
+          {
+            "index": 1,
+            "message": {
+              "role": "assistant",
+              "content": "B"
+            },
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      "expect": {
+        "code": "invalid_response"
+      }
+    },
+    {
+      "name": "blank-content",
+      "mode": "base",
+      "model": "example-base-model",
+      "status": 200,
+      "contentType": "application/json",
+      "body": {
+        "id": "chatcmpl-example",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "example-base-model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "   "
+            },
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      "expect": {
+        "code": "invalid_response"
+      }
+    },
+    {
+      "name": "stream-chunk",
+      "mode": "base",
+      "model": "example-base-model",
+      "status": 200,
+      "contentType": "application/json",
+      "body": {
+        "id": "chatcmpl-example",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": "example-base-model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "A"
+            },
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      "expect": {
+        "code": "invalid_response"
+      }
+    },
+    {
+      "name": "not-json-type",
+      "mode": "base",
+      "model": "example-base-model",
+      "status": 200,
+      "contentType": "text/html",
+      "body": {
+        "id": "chatcmpl-example",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "example-base-model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "A"
+            },
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      "expect": {
+        "code": "invalid_response"
+      }
+    },
+    {
+      "name": "refused",
+      "mode": "base",
+      "model": "example-base-model",
+      "status": 401,
+      "contentType": "application/json",
+      "body": {
+        "error": "unauthorized"
+      },
+      "expect": {
+        "code": "route_unavailable"
+      }
+    },
+    {
+      "name": "server-error",
+      "mode": "base",
+      "model": "example-base-model",
+      "status": 503,
+      "contentType": "application/json",
+      "body": {
+        "error": "busy"
+      },
+      "expect": {
+        "code": "unknown_outcome"
+      }
+    },
+    {
+      "name": "near-miss-model-suffix",
+      "mode": "base",
+      "model": "example-base-model",
+      "status": 200,
+      "contentType": "application/json",
+      "body": {
+        "id": "chatcmpl-example",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "example-base-model-2",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "The proposal is ready for Friday."
+            },
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      "expect": {
+        "code": "provider_mismatch"
+      }
+    },
+    {
+      "name": "near-miss-model-case",
+      "mode": "base",
+      "model": "example-base-model",
+      "status": 200,
+      "contentType": "application/json",
+      "body": {
+        "id": "chatcmpl-example",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "Example-Base-Model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "The proposal is ready for Friday."
+            },
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      "expect": {
+        "code": "provider_mismatch"
+      }
+    },
+    {
+      "name": "json-type-lookalike",
+      "mode": "base",
+      "model": "example-base-model",
+      "status": 200,
+      "contentType": "application/jsonx",
+      "body": {
+        "id": "chatcmpl-example",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "example-base-model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "The proposal is ready for Friday."
+            },
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      "expect": {
+        "code": "invalid_response"
+      }
+    },
+    {
+      "name": "fixture-route-not-synthetic",
+      "mode": "fixture",
+      "model": "synthetic-writing",
+      "status": 200,
+      "contentType": "application/json",
+      "body": {
+        "id": "chatcmpl-example",
+        "created": 0,
+        "model": "synthetic-writing",
+        "writing_pipeline": {
+          "synthetic_only": false,
+          "personalized": false,
+          "state": "completed_synthetic",
+          "idempotency_key": "example-key",
+          "advisory_options_ignored": [
+            "max_tokens",
+            "temperature"
+          ]
+        },
+        "object": "chat.completion",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "[SYNTHETIC REWRITE ONLY] Synthetic note: the proposal is ready for Friday."
+            },
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      "expect": {
+        "code": "provider_mismatch"
+      }
+    },
+    {
+      "name": "personalized-not-boolean",
+      "mode": "fixture",
+      "model": "synthetic-writing",
+      "status": 200,
+      "contentType": "application/json",
+      "body": {
+        "id": "chatcmpl-example",
+        "created": 0,
+        "model": "synthetic-writing",
+        "writing_pipeline": {
+          "synthetic_only": true,
+          "personalized": "no",
+          "state": "completed_synthetic",
+          "idempotency_key": "example-key",
+          "advisory_options_ignored": [
+            "max_tokens",
+            "temperature"
+          ]
+        },
+        "object": "chat.completion",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "[SYNTHETIC REWRITE ONLY] Synthetic note: the proposal is ready for Friday."
+            },
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      "expect": {
+        "code": "invalid_response"
+      }
+    },
+    {
+      "name": "pipeline-mark-null",
+      "mode": "base",
+      "model": "example-base-model",
+      "status": 200,
+      "contentType": "application/json",
+      "body": {
+        "id": "chatcmpl-example",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "example-base-model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "The proposal is ready for Friday."
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "writing_pipeline": null
+      },
+      "expect": {
+        "code": "invalid_response"
+      }
+    },
+    {
+      "name": "pipeline-outcome-unknown",
+      "mode": "fixture",
+      "model": "synthetic-writing",
+      "status": 409,
+      "contentType": "application/json",
+      "body": {
+        "schema": "writing.error/v1",
+        "error": {
+          "code": "rewrite_outcome_unknown"
+        }
+      },
+      "expect": {
+        "code": "unknown_outcome"
+      }
+    },
+    {
+      "name": "pipeline-conflict",
+      "mode": "fixture",
+      "model": "synthetic-writing",
+      "status": 409,
+      "contentType": "application/json",
+      "body": {
+        "schema": "writing.error/v1",
+        "error": {
+          "code": "consent_revoked"
+        }
+      },
+      "expect": {
+        "code": "unknown_outcome"
+      }
+    },
+    {
+      "name": "accepted-not-done",
+      "mode": "base",
+      "model": "example-base-model",
+      "status": 202,
+      "contentType": "application/json",
+      "body": {
+        "id": "chatcmpl-example",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "example-base-model",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "The proposal is ready for Friday."
+            },
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      "expect": {
+        "code": "unknown_outcome"
+      }
+    },
+    {
+      "name": "redirect",
+      "mode": "base",
+      "model": "example-base-model",
+      "status": 302,
+      "contentType": "application/json",
+      "body": {},
+      "expect": {
+        "code": "unknown_outcome"
+      }
+    },
+    {
+      "name": "not-found",
+      "mode": "base",
+      "model": "example-base-model",
+      "status": 404,
+      "contentType": "application/json",
+      "body": {
+        "error": "not found"
+      },
+      "expect": {
+        "code": "route_unavailable"
+      }
+    },
+    {
+      "name": "too-large",
+      "mode": "fixture",
+      "model": "synthetic-writing",
+      "status": 413,
+      "contentType": "application/json",
+      "body": {
+        "schema": "writing.error/v1",
+        "error": {
+          "code": "input_too_large"
+        }
+      },
+      "expect": {
+        "code": "route_unavailable"
+      }
+    },
+    {
+      "name": "rate-limited",
+      "mode": "base",
+      "model": "example-base-model",
+      "status": 429,
+      "contentType": "application/json",
+      "body": {
+        "error": "slow down"
+      },
+      "expect": {
+        "code": "unknown_outcome"
+      }
+    },
+    {
+      "name": "internal-error",
+      "mode": "base",
+      "model": "example-base-model",
+      "status": 500,
+      "contentType": "application/json",
+      "body": {
+        "error": "oops"
+      },
+      "expect": {
+        "code": "unknown_outcome"
+      }
+    },
+    {
+      "name": "bad-request",
+      "mode": "fixture",
+      "model": "synthetic-writing",
+      "status": 400,
+      "contentType": "application/json",
+      "body": {
+        "schema": "writing.error/v1",
+        "error": {
+          "code": "invalid_chat_request"
+        }
+      },
+      "expect": {
+        "code": "route_unavailable"
+      }
+    },
+    {
+      "name": "unsupported-type",
+      "mode": "base",
+      "model": "example-base-model",
+      "status": 415,
+      "contentType": "application/json",
+      "body": {
+        "error": "unsupported media type"
+      },
+      "expect": {
+        "code": "route_unavailable"
+      }
+    }
+  ]
+}
