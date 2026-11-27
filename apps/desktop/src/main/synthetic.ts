@@ -27,7 +27,7 @@ export interface SyntheticMainOptions {
   readonly clipboard: ClipboardPort;
   readonly clock?: Clock;
   readonly newId?: IdSource;
-  /** Wall-clock time stamped on accepted jobs for Inspect. */
+  /** Wall-clock time: stamped on accepted jobs for Inspect, and read by the local base rewrite route's allowance. */
   readonly now?: () => number;
   readonly fixtureDelayMs?: number;
   readonly timeoutMs?: number;
@@ -47,7 +47,7 @@ export interface SyntheticMain {
 }
 
 export function createSyntheticMain(options: SyntheticMainOptions): SyntheticMain {
-  const base = options.baseRewrite === undefined ? null : createBaseRewriteProvider(options.baseRewrite);
+  const base = options.baseRewrite === undefined ? null : createBaseRewriteProvider(options.baseRewrite, options.now);
   const policy = createRoutePolicy([base === null ? FIXTURE_REWRITE_ROUTE : BASE_REWRITE_ROUTE, FIXTURE_TRANSCRIBE_ROUTE]);
   const timing = { clock: options.clock, delayMs: options.fixtureDelayMs, timeoutMs: options.timeoutMs };
   const fixture = createFixtureRewriteProvider(timing);

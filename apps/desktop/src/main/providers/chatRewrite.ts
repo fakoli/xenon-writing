@@ -128,6 +128,14 @@ export interface ChatRewriteConfig {
    * only. An operator guard, not a privacy classifier.
    */
   readonly requireMarker?: string;
+  /**
+   * When set, the route is approved only before this instant (milliseconds
+   * since the Unix epoch): from then on every job is `route_unavailable`
+   * before dispatch, and nothing is sent. Read from `now`, `Date.now` by
+   * default. The local base rewrite route's allowance ends on a fixed date.
+   */
+  readonly allowedUntil?: number;
+  readonly now?: () => number;
 }
 
 export interface ChatRewriteProvider extends RewriteProvider {
@@ -216,8 +224,9 @@ export function readChatReply(route: PublishedRoute, maxReplyBytes: number, repl
  * honestly, so a misconfigured route fails closed.
  */
 export function createChatRewriteProvider(config: ChatRewriteConfig): ChatRewriteProvider {
-  const { route, maxTokens, timeoutMs, maxReplyBytes, transport, requireMarker } = config;
+  const { route, maxTokens, timeoutMs, maxReplyBytes, transport, requireMarker, allowedUntil, now = Date.now } = config;
   if (requireMarker !== undefined && requireMarker.trim() === '') throw new Error('a required marker must not be blank');
+  if (allowedUntil !== undefined && !isPositiveInteger(allowedUntil)) throw new Error('an allowance must end at a positive integer time');
   const model = route.identity;
   if (route.stage !== 'rewrite') throw new Error('chat rewrite serves the rewrite stage only');
   // Personalized output needs runtime readiness and activation, which do not exist.
@@ -248,6 +257,8 @@ export function createChatRewriteProvider(config: ChatRewriteConfig): ChatRewrit
       return sends;
     },
     async run(input, control) {
+      // Checked at every job, so an app left running past the end sends nothing either.
+      if (allowedUntil !== undefined && !(now() < allowedUntil)) throw new ProviderFailure('route_unavailable');
       if (input.transcript.trim() === '' || utf8Bytes(input.transcript) > route.limits.transcriptBytes) {
         throw new ProviderFailure('invalid_input');
       }

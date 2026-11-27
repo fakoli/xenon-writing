@@ -51,15 +51,20 @@ function fakeTransport(answer: () => Promise<ChatReply>) {
 }
 
 const TRUSTED_URL = 'file:///app/renderer/index.html';
+/** The allowance's end: the end of 2026-12-31, Pacific time. Tests pin the clock before it. */
+const ALLOWANCE_END = Date.parse('2027-01-01T08:00:00Z');
+const BEFORE_END = Date.parse('2026-11-27T12:00:00Z');
 const caller: Caller = { windowId: 1, frameUrl: TRUSTED_URL, isTopFrame: true };
 
 /** Main with the local base rewrite route on, through the preload façade and the reducer. */
-function app(transport?: ChatTransport) {
+/** `now` null: no clock injected, as `main.ts` builds it. */
+function app(transport?: ChatTransport, now: (() => number) | null = () => BEFORE_END) {
   const sent: MainEvent[] = [];
   const listeners = new Set<(event: unknown) => void>();
   let next = 0;
   const { main, fixture } = createSyntheticMain({
     baseRewrite: transport,
+    now: now ?? undefined,
     newId: () => `3f2a9c1e-0b7d-4e55-9a1c-${String(++next).padStart(12, '0')}`,
     clipboard: { writeText: () => {} },
     send: (_windowId, _channel, event) => {
@@ -113,7 +118,8 @@ describe('the local base rewrite route', () => {
     // The same exact model and port as the Swift reference app's base rewrite client.
     assert.equal(MODEL, 'mlx-community/Qwen3-4B-Instruct-2507-4bit');
     assert.equal(BASE_REWRITE_PORT, 30113);
-    assert.deepEqual({ ...BASE_REWRITE_SETTINGS }, { maxTokens: 1024, timeoutMs: 45_000, maxReplyBytes: 100_000, requireMarker: 'synthetic' });
+    assert.deepEqual({ ...BASE_REWRITE_SETTINGS }, { maxTokens: 1024, timeoutMs: 45_000, maxReplyBytes: 100_000, requireMarker: 'synthetic', allowedUntil: ALLOWANCE_END });
+    assert.equal(new Date(BASE_REWRITE_SETTINGS.allowedUntil).toISOString(), '2027-01-01T08:00:00.000Z', 'midnight at the end of 2026-12-31 in Pacific standard time');
     assert.deepEqual({ ...BASE_REWRITE_ROUTE.limits }, { transcriptBytes: 4_096, steeringBytes: 2_048, draftBytes: 8_192 }, "the card's limits");
   });
 
@@ -167,7 +173,7 @@ describe('the local base rewrite route', () => {
 
   test('a transcript without "synthetic" is unsupported before dispatch, in any case it is sent', async () => {
     const { transport, requests } = fakeTransport(async () => reply('Rewritten.'));
-    const provider = createBaseRewriteProvider(transport);
+    const provider = createBaseRewriteProvider(transport, () => BEFORE_END);
     let dispatched = 0;
     const control: ProviderControl = { signal: new AbortController().signal, dispatched: () => void dispatched++ };
     await assert.rejects(
@@ -182,7 +188,7 @@ describe('the local base rewrite route', () => {
 
   test('steering is held to the same rule: empty, or containing "synthetic"', async () => {
     const { transport, requests } = fakeTransport(async () => reply('Rewritten.'));
-    const provider = createBaseRewriteProvider(transport);
+    const provider = createBaseRewriteProvider(transport, () => BEFORE_END);
     const control: ProviderControl = { signal: new AbortController().signal, dispatched: () => {} };
     await assert.rejects(
       provider.run({ jobId: 'job-1', transcript: 'Synthetic note: meet at noon.', steering: 'Make it sound like my usual emails.' }, control),
@@ -192,6 +198,53 @@ describe('the local base rewrite route', () => {
     await provider.run({ jobId: 'job-2', transcript: 'Synthetic note: meet at noon.', steering: '' }, control);
     await provider.run({ jobId: 'job-3', transcript: 'Synthetic note: meet at noon.', steering: 'Synthetic test: use one sentence.' }, control);
     assert.equal(requests.length, 2);
+  });
+
+  test('the allowance ends at a fixed instant, checked at every job: from then on nothing is sent', async () => {
+    const { transport, requests } = fakeTransport(async () => reply('Rewritten.'));
+    let now = ALLOWANCE_END - 1;
+    const provider = createBaseRewriteProvider(transport, () => now);
+    let dispatched = 0;
+    const control: ProviderControl = { signal: new AbortController().signal, dispatched: () => void dispatched++ };
+    await provider.run({ jobId: 'job-1', transcript: 'Synthetic note: meet at noon.', steering: '' }, control);
+    assert.equal(requests.length, 1, 'sent up to the last millisecond');
+    for (const [jobId, at] of [['job-2', ALLOWANCE_END], ['job-3', ALLOWANCE_END + 86_400_000]] as const) {
+      now = at;
+      await assert.rejects(
+        provider.run({ jobId, transcript: 'Synthetic note: meet at noon.', steering: '' }, control),
+        (e: unknown) => e instanceof ProviderFailure && e.code === 'route_unavailable',
+        'the same provider, so an app left running past the end refuses too',
+      );
+    }
+    assert.equal(dispatched, 1, 'refused before dispatch');
+    assert.equal(requests.length, 1);
+    assert.equal(provider.sends, 1);
+  });
+
+  test("main's clock reaches the route: past the end, a rewrite is route_unavailable and never sent", async () => {
+    const { transport, requests } = fakeTransport(async () => reply('Synthetic note: meet at noon, please.'));
+    const a = app(transport, () => ALLOWANCE_END);
+    await a.start();
+    assert.equal((await a.rewrite('Synthetic note: meet at noon.')).ok, true, 'accepted, then refused by the route');
+    assert.equal(requests.length, 0);
+    assert.equal(a.s().notice, 'route_unavailable');
+    assert.equal(a.s().draft, null);
+    assert.equal(a.fixture.calls, 0, 'no fallback');
+  });
+
+  test('without an injected clock (as main.ts builds it) the route reads the real one', async (t) => {
+    const { transport, requests } = fakeTransport(async () => reply('Synthetic note: meet at noon, please.'));
+    // Date alone is mocked, so only the wall clock moves; timers are untouched.
+    t.mock.timers.enable({ apis: ['Date'], now: ALLOWANCE_END - 1 });
+    const a = app(transport, null);
+    await a.start();
+    assert.equal((await a.rewrite('Synthetic note: meet at noon.')).ok, true);
+    assert.equal(requests.length, 1, 'sent in the allowance’s last millisecond');
+    assert.equal(a.s().draft?.text, 'Synthetic note: meet at noon, please.');
+    t.mock.timers.setTime(ALLOWANCE_END);
+    assert.equal((await a.rewrite('Synthetic note: meet at one.')).ok, true, 'accepted by main, then refused by the route');
+    assert.equal(requests.length, 1, 'never sent once it ended');
+    assert.equal(a.s().notice, 'route_unavailable');
   });
 
   test('switched on, main offers the base route instead of the fixture, and a rewrite goes through it once', async () => {

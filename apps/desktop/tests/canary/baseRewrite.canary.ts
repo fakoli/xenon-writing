@@ -14,7 +14,7 @@ import { homedir } from 'node:os';
 import type { FailureCode } from '../../src/contracts/session.ts';
 import type { JobSink, ProviderSuccess } from '../../src/main/ipc.ts';
 import { createJobRunner } from '../../src/main/jobs.ts';
-import { BASE_REWRITE_PORT, BASE_REWRITE_ROUTE, createBaseRewriteProvider, createBaseRewriteTransport } from '../../src/main/providers/baseRewriteRoute.ts';
+import { BASE_REWRITE_PORT, BASE_REWRITE_ROUTE, BASE_REWRITE_SETTINGS, createBaseRewriteProvider, createBaseRewriteTransport } from '../../src/main/providers/baseRewriteRoute.ts';
 import { chatRequestBody } from '../../src/main/providers/chatRewrite.ts';
 
 const TRANSCRIPT = 'Synthetic note for the garden club: the plant swap moves to Saturday at ten, at the community hall.';
@@ -48,6 +48,7 @@ if (!process.argv.includes('--send')) {
     console.log(`canary: ok in ${ms} ms, mode ${outcome.result.actualMode}, identity ${outcome.result.actualIdentity}`);
     console.log(`draft: ${outcome.result.text}`);
   } else {
-    console.log(`canary: ${outcome.code} in ${ms} ms`);
+    const ended = !(Date.now() < BASE_REWRITE_SETTINGS.allowedUntil);
+    console.log(`canary: ${outcome.code} in ${ms} ms${ended ? ` (the allowance ended at ${new Date(BASE_REWRITE_SETTINGS.allowedUntil).toISOString()}; nothing was sent)` : ''}`);
   }
 }

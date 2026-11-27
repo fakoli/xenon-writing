@@ -1,8 +1,9 @@
 /**
  * The local base rewrite route's card, compiled in: a rewrite on an mlx-lm server the
  * owner runs at 127.0.0.1:30113, under the synthetic-text-only exception: only
- * text that contains "synthetic" is sent, until the service's retention is
- * documented and the owner authorizes real samples.
+ * text that contains "synthetic" is sent, and only until the exception ends
+ * (`BASE_REWRITE_SETTINGS.allowedUntil`, by this machine's clock). Real
+ * samples need the owner's separate authorization.
  *
  * The destination, model, limits, timeout and identity file live here, in
  * main, and nowhere a renderer or a reply can change them. The environment
@@ -55,6 +56,10 @@ export const BASE_REWRITE_SETTINGS = Object.freeze({
   timeoutMs: 45_000,
   maxReplyBytes: 100_000,
   requireMarker: 'synthetic',
+  // The owner renewed the synthetic-text-only exception until the end of
+  // 2026-12-31, Pacific time. From then on every job is refused before it is
+  // sent, until a reviewed change moves this date or retires the exception.
+  allowedUntil: Date.parse('2027-01-01T08:00:00Z'),
 });
 
 /** The main-only switch. Only this exact name and value turn the route on. */
@@ -92,6 +97,6 @@ export function baseRewriteTransportConfig(homeDirectory: string): LoopbackConfi
   };
 }
 
-export function createBaseRewriteProvider(transport: ChatTransport): ChatRewriteProvider {
-  return createChatRewriteProvider({ route: BASE_REWRITE_ROUTE, ...BASE_REWRITE_SETTINGS, transport });
+export function createBaseRewriteProvider(transport: ChatTransport, now: () => number = Date.now): ChatRewriteProvider {
+  return createChatRewriteProvider({ route: BASE_REWRITE_ROUTE, ...BASE_REWRITE_SETTINGS, transport, now });
 }

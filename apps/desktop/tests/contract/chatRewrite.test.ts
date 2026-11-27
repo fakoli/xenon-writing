@@ -333,6 +333,20 @@ describe('chat-rewrite provider core', () => {
     }
   });
 
+  test('an allowance is checked against the clock before any check of the text, and refuses without sending', async () => {
+    const { transport, requests } = fakeTransport(async () => baseReply('Meet at noon.'));
+    assert.deepEqual(await runOne(transport, { allowedUntil: 2_000, now: () => 1_999 }), { ok: true, result: { actualMode: 'base', actualIdentity: 'example-base-model', text: 'Meet at noon.' } });
+    assert.deepEqual(await runOne(transport, { allowedUntil: 2_000, now: () => 2_000 }), { ok: false, code: 'route_unavailable' });
+    assert.deepEqual(await runOne(transport, { allowedUntil: 2_000, now: () => Number.NaN }), { ok: false, code: 'route_unavailable' }, 'a clock that cannot be read refuses');
+    assert.deepEqual(await runOne(transport, { allowedUntil: 2_000, now: () => 2_000, requireMarker: 'synthetic' }, job(BASE_ROUTE, 'Meet at noon.', '')), { ok: false, code: 'route_unavailable' }, 'ended, whatever the text');
+    assert.equal(requests.length, 1);
+    // Without an injected clock it reads the real one.
+    assert.deepEqual(await runOne(transport, { allowedUntil: Date.now() - 60_000 }), { ok: false, code: 'route_unavailable' });
+    assert.equal(requests.length, 1);
+    assert.equal((await runOne(transport, { allowedUntil: Date.now() + 3_600_000 })).ok, true);
+    assert.equal(requests.length, 2);
+  });
+
   test('config it cannot serve honestly fails at startup', () => {
     const { transport } = fakeTransport(async () => baseReply('x'));
     const bad: [string, Partial<ChatRewriteConfig>][] = [
@@ -342,6 +356,11 @@ describe('chat-rewrite provider core', () => {
       ['zero tokens', { maxTokens: 0 }],
       ['fractional timeout', { timeoutMs: 1.5 }],
       ['no reply cap', { maxReplyBytes: 0 }],
+      ['allowance ends at zero', { allowedUntil: 0 }],
+      ['allowance ends before the epoch', { allowedUntil: -1 }],
+      ['fractional allowance end', { allowedUntil: 1.5 }],
+      ['allowance end not a number', { allowedUntil: Number.NaN }],
+      ['allowance never ends', { allowedUntil: Number.POSITIVE_INFINITY }],
     ];
     for (const [name, overrides] of bad) assert.throws(() => createChatRewriteProvider(config(transport, overrides)), Error, name);
   });

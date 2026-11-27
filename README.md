@@ -2,7 +2,7 @@
 
 An Electron desktop client for Xenon Writing, a voice-to-writing assistant. You type or record a transcript, add optional steering, and get a rewritten draft that you review and copy yourself. It targets macOS on Apple silicon, macOS 15 or later.
 
-**Status: early and unreleased.** By default the app is fully offline: rewrites and transcription use synthetic fixture routes inside the app. One optional route sends rewrites to a model server on `127.0.0.1:30113`. It is off unless the app is launched with `XENON_REWRITE_ROUTE=local-base-rewrite`, it only sends text containing the word "synthetic", and only to a server that first proves its identity (a protocol whose server half is not in this repository). Nothing here is evidence of transcription or rewrite quality.
+**Status: early and unreleased.** By default the app is fully offline: rewrites and transcription use synthetic fixture routes inside the app. One optional route sends rewrites to a model server on `127.0.0.1:30113`. It is off unless the app is launched with `XENON_REWRITE_ROUTE=local-base-rewrite`, it only sends text containing the word "synthetic", only to a server that first proves its identity (a protocol whose server half is not in this repository), and only until the end of 2026-12-31, Pacific time, by this machine's clock: from then on it sends nothing until a reviewed change extends that date, and a rewrite there reports that the route is unavailable. Nothing here is evidence of transcription or rewrite quality.
 
 ## Checks
 
