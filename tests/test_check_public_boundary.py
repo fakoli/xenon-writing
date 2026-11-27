@@ -164,11 +164,13 @@ class Content(unittest.TestCase):
                      b'route card: 12', b'route card [12]', b'route card "12"', b'route card, 12', b'route card\xc2\xa012',
                      b'see route card 9.', b'route card 12, then', b'the card 05 limits', b'card 05, then', b'cards 05',
                      b'card #05', b'card (05)', b'card no. 05', b'route card **(12)**', b'route **(card 12',
-                     b'route card no. (12)', b'route card no (12)']:
+                     b'route card no. (12)', b'route card no (12)', b'route card (((12', b'route card\n*((((12',
+                     b'route card no.(((12']:
             self.assertIn('design document number', self.design(text), text)
         for text in [b'route cards are checked at startup', b"the route card's port", b'Invalid route card: duplicate route key',
                      b'route card 127.0.0.1', b'route card 30113', b'route card 123', b'route card 12.5', b'route card 4,096',
                      b'route card.\n\n3. Next item', b'route card --- (12)', b'route ---- (card 12', b'route card no. --- 12',
+                     b'route card ((((12', b'route card\n*(((((12', b'route card no.((((12',
                      b'card 9', b'card 12', b'card 051', b'card 05.5', b'card 05,5', b'discard 05', b'reroute card 12']:
             self.assertEqual(self.design(text), [], text)
 
@@ -177,7 +179,7 @@ class Content(unittest.TestCase):
                      b'04\xe2\x80\x90gizmos', b'04\xe2\x80\x91gizmos', b'04\xe2\x80\x95gizmos']:
             self.assertEqual(self.design(text), ['numbered document name'], text)
         for text in [b'released 2026-11-03-notes', b'job-01-widgets', b'x01-gizmos', b'v1.01-beta', b'16-bit audio',
-                     b'a 3-step plan', b'04-ab', b'14-gizmos']:
+                     b'a 3-step plan', b'04-ab', b'14-gizmos', b'04\xe2\x80\x8fgizmos', b'04\xe2\x80\x96gizmos']:
             self.assertEqual(self.design(text), [], text)
 
     def test_design_pointers_skip_the_tools_own_fixtures_and_count_only_when_current(self):

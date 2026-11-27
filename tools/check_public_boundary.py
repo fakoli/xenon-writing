@@ -21,9 +21,10 @@ What it checks (see PUBLIC_BOUNDARY.md):
 - Host details: home-directory paths, private network addresses (LAN and
   tailnet ranges) and local host names.
 - Design-document pointers: a route card's number, or a numbered document
-  name (two digits starting with 0, a hyphen, a word), in contents, file
-  names and commit messages. Not in DESIGN_RULE_SINCE and its ancestors,
-  which used them before this rule; rewriting those is the owner's call.
+  name (two digits starting with 0, then a hyphen, an underscore or a dash,
+  then a word), in contents, file names, commit and tag messages, and ref
+  names. Not in DESIGN_RULE_SINCE and its ancestors, which used them before
+  this rule; rewriting those is the owner's call.
 - Dangling pointers: a path-like reference in a file (say `docs/x.md` or
   `../other/file.py`) that names no file in the tree, which is how pointers
   to private material show up.
@@ -105,10 +106,10 @@ HOST_PATTERNS = {
 HOST_SKIP = {'tools/check_public_boundary.py', 'tests/test_check_public_boundary.py'}
 # Design documents kept out of this repository, named by a route card's number or a numbered
 # document name. Generic on purpose, so this file names none of them, and cautious: it also
-# refuses some innocent names (a date like 01-Jan, "08-bit", "card 02"), which can be reworded.
-# Punctuation, markdown, a non-breaking space or one line break with a comment marker may sit
-# between the words, but not a blank line; a number followed by more digits, a comma or a decimal
-# or a comma and digits (an address, a port, a size) is not a route card's number.
+# refuses some innocent text (see PUBLIC_BOUNDARY.md), which can be reworded. Up to four
+# punctuation, markdown or non-breaking-space characters, or one line break with a comment
+# marker, may sit between the words, but not a blank line. A number followed by more digits, or
+# by a period or comma and digits (an address, a port, a size), is not a route card's number.
 _PUNCT = rb'(?:[^\w\n]|_)'
 _SEP = _PUNCT + rb'{0,4}(?:\n[ \t]*(?:\*|//|#|<!--)?' + _PUNCT + rb'{0,4})?'
 _NO = rb'(?:(?:no|nr|number)\.?[^\w\n]{0,3})?'
