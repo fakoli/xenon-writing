@@ -369,7 +369,7 @@ describe('chat-rewrite provider core', () => {
     assert.doesNotThrow(() => createChatRewriteProvider(config(transport, { route: { ...BASE_ROUTE, identity: 'example/base-model' }, maxTokens: 8193 })));
   });
 
-  test('only route card 07 reaches the adapter, and only behind main\'s switch', () => {
+  test('only the local base rewrite route reaches the adapter, and only behind main\'s switch', () => {
     // synthetic.ts registers it only when given a transport; main.ts creates one only behind the switch.
     const main = readFileSync(new URL('../../src/main/main.ts', import.meta.url), 'utf8');
     assert.equal(main.match(/createLoopbackTransport\(/g)?.length, 1);

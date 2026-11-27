@@ -13,7 +13,7 @@
  * a repeat and a reconciliation can find the job.
  *
  * It sends nothing itself. The HTTP exchange goes through an injected
- * ChatTransport: route card 07's is `loopbackHttp.ts`, the only file that
+ * ChatTransport: the local base rewrite route's is `loopbackHttp.ts`, the only file that
  * opens a socket.
  *
  * Failure mapping, following the job runner's dispatch rule:
@@ -118,7 +118,7 @@ export interface ChatRewriteConfig {
   /**
    * When set, every text the user wrote must contain this word (any case):
    * the transcript always, the steering whenever it is not empty. Otherwise
-   * the job is `unsupported` before dispatch. Route card 07's
+   * the job is `unsupported` before dispatch. The local base rewrite route's
    * synthetic-text-only exception; the Swift reference checks the transcript
    * only. An operator guard, not a privacy classifier.
    */

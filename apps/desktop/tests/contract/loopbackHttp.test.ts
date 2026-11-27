@@ -1,4 +1,4 @@
-// Contract tests for the loopback transport (route card 07). Each test runs
+// Contract tests for the loopback transport (the local base rewrite route). Each test runs
 // a throwaway HTTP server on 127.0.0.1 inside this process, so nothing leaves
 // the machine. Fictional text only; no service, model or credential.
 import { after, describe, test } from 'node:test';

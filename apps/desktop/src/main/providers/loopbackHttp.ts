@@ -1,6 +1,6 @@
 /**
  * Loopback HTTP transport for one configured chat route (desktop-to-pipeline
- * route; today only route card 07, in baseRewriteRoute.ts).
+ * route; today only the local base rewrite route, in baseRewriteRoute.ts).
  *
  * The only main-process file allowed `node:http` (tests/contract/offline.test.ts).
  * It reaches exactly one destination: the literal address 127.0.0.1 (no name

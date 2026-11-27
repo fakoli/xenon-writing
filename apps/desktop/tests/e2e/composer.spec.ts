@@ -1696,7 +1696,7 @@ test('importing other audio after Not now clears "nothing was sent"', async ({ p
 });
 
 // ---------------------------------------------------------------------------
-// The Inspect step (route card 07): an unknown outcome shows what is
+// The Inspect step (the local base rewrite route): an unknown outcome shows what is
 // known, and one explicit Acknowledge clears it where the route's card allows.
 
 const SENT_AT = Date.UTC(2026, 10, 26, 22, 42); // 10:42 PM in UTC

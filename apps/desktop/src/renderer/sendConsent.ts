@@ -1,5 +1,5 @@
 /**
- * The first-send consent rule (route card 07): before text first leaves the
+ * The first-send consent rule (the local base rewrite route): before text first leaves the
  * app in a session, the user confirms where it goes. Pure, so it is tested
  * apart from the UI, like recording.ts.
  */

@@ -189,7 +189,7 @@ export type OutcomeKind = (typeof OUTCOME_KINDS)[number];
 
 /**
  * How an unknown outcome's gate can clear, from its route card:
- * - "acknowledge": the user acknowledges it in Inspect (route card 07: the
+ * - "acknowledge": the user acknowledges it in Inspect (the local base rewrite route: the
  *   service keeps no receipts to reconcile against);
  * - "restart": nothing in the app clears it; quitting does, because the gate
  *   lives in memory. Every route without a card that allows acknowledgment,

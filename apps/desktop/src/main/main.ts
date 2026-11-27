@@ -6,7 +6,7 @@
  * synthetic transcriber. On macOS (the only target), Packet E's microphone
  * permission and capture ports are wired too, through a hidden capture window
  * that alone may use the microphone while a recording is opening or open.
- * Route card 07's local base rewrite is off unless main is launched with its
+ * The local base rewrite route is off unless main is launched with its
  * exact switch (XENON_REWRITE_ROUTE=local-base-rewrite); then rewrites go to
  * 127.0.0.1:30113 and synthetic text only is accepted. The window stays
  * sandboxed and context-isolated, with no Node integration, no navigation or
@@ -39,7 +39,7 @@ const media =
     ? createElectronMedia({ preload: path.join(__dirname, 'capturePreload.cjs'), pageUrl: pageUrl(CAPTURE_WINDOW_VITE_DEV_SERVER_URL, CAPTURE_WINDOW_VITE_NAME) })
     : null;
 
-// Main-only: the environment can turn route card 07 on, never choose where it goes.
+// Main-only: the environment can turn the local base rewrite route on, never choose where it goes.
 const baseRewrite = baseRewriteEnabled(process.env) ? createLoopbackTransport({ port: BASE_REWRITE_PORT }) : undefined;
 
 const { main: desktop } = createSyntheticMain({

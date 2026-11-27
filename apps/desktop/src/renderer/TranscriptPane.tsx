@@ -72,7 +72,7 @@ function statusLine(state: SessionState, blocker: RewriteBlocker | null, kind: J
   return { icon: 'ⓘ', text: 'Ready to rewrite.' };
 }
 
-/** The first-send confirmation for a route that leaves the app (route card 07's consent step). */
+/** The first-send confirmation for a route that leaves the app (the local base rewrite route's consent step). */
 export interface SendConfirm {
   /** The route's label and exact identity, e.g. "Local base model (test text only)". */
   readonly label: string;

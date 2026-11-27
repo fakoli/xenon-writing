@@ -30,7 +30,7 @@ export const CHANNELS = Object.freeze({
   discardCapture: 'xenon:v1:capture.discard',
   /**
    * The user acknowledges one unknown outcome in Inspect, for a route whose
-   * card allows it (route card 07). Clears that gate only.
+   * card allows it (the local base rewrite route). Clears that gate only.
    */
   acknowledgeOutcome: 'xenon:v1:outcome.acknowledge',
   /** Main → renderer, ordered: accepted, then one terminal, then any reconcile. */

@@ -1,4 +1,4 @@
-// Route card 07 wired into main's composition, against a fake transport:
+// The local base rewrite route wired into main's composition, against a fake transport:
 // nothing here opens a socket. Fictional, synthetic text only.
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -47,7 +47,7 @@ function fakeTransport(answer: () => Promise<ChatReply>) {
 const TRUSTED_URL = 'file:///app/renderer/index.html';
 const caller: Caller = { windowId: 1, frameUrl: TRUSTED_URL, isTopFrame: true };
 
-/** Main with route card 07 on, through the preload façade and the reducer. */
+/** Main with the local base rewrite route on, through the preload façade and the reducer. */
 function app(transport?: ChatTransport) {
   const sent: MainEvent[] = [];
   const listeners = new Set<(event: unknown) => void>();
@@ -98,7 +98,7 @@ function app(transport?: ChatTransport) {
   return { start, s, rewrite, sent, fixture };
 }
 
-describe('route card 07: the local base rewrite', () => {
+describe('the local base rewrite route', () => {
   test('the compiled-in card is valid, labelled honestly, and pins the reference model and port', () => {
     assert.doesNotThrow(() => createRoutePolicy([BASE_REWRITE_ROUTE, FIXTURE_TRANSCRIBE_ROUTE]));
     assert.equal(BASE_REWRITE_ROUTE.mode, 'base');
@@ -108,7 +108,7 @@ describe('route card 07: the local base rewrite', () => {
     assert.equal(MODEL, 'mlx-community/Qwen3-4B-Instruct-2507-4bit');
     assert.equal(BASE_REWRITE_PORT, 30113);
     assert.deepEqual({ ...BASE_REWRITE_SETTINGS }, { maxTokens: 1024, timeoutMs: 45_000, maxReplyBytes: 100_000, requireMarker: 'synthetic' });
-    assert.deepEqual({ ...BASE_REWRITE_ROUTE.limits }, { transcriptBytes: 4_096, steeringBytes: 2_048, draftBytes: 8_192 }, 'the card 07 limits');
+    assert.deepEqual({ ...BASE_REWRITE_ROUTE.limits }, { transcriptBytes: 4_096, steeringBytes: 2_048, draftBytes: 8_192 }, "the card's limits");
   });
 
   test('only the exact switch turns it on', () => {

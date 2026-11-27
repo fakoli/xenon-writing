@@ -1,10 +1,10 @@
 /**
- * Main's composition (Packet D, plus route card 07).
+ * Main's composition (Packet D, plus the local base rewrite route).
  *
  * Main's IPC handlers wired to the route policy, the job runner and the
  * providers. By default every route is an in-process fixture: a typed session
  * completes end to end and nothing leaves the process. Given a `baseRewrite`
- * transport (main turns it on only with route card 07's switch), the rewrite
+ * transport (main turns it on only with the local base rewrite route's switch), the rewrite
  * route is the local base model instead, and the fixture rewrite route is not
  * registered, so there is no route to fall back to. Transcription stays the
  * fixture.
@@ -36,7 +36,7 @@ export interface SyntheticMainOptions {
   /** OS microphone permission and capture (Packet E); without both, recording is not offered. */
   readonly microphone?: MicrophonePort;
   readonly capture?: CapturePort;
-  /** Route card 07's transport. When set, rewrites go to the local base model, not the fixture. */
+  /** The local base rewrite route's transport. When set, rewrites go to the local base model, not the fixture. */
   readonly baseRewrite?: ChatTransport;
 }
 
@@ -65,7 +65,7 @@ export function createSyntheticMain(options: SyntheticMainOptions): SyntheticMai
     send: options.send,
     newId: options.newId,
     now: options.now,
-    // Route card 07: its service keeps no receipts, so the user acknowledges an unknown outcome
+    // The local base rewrite route: its service keeps no receipts, so the user acknowledges an unknown outcome
     // in Inspect. A deviation, acceptable only while the route is synthetic-only. Fixture routes never may.
     acknowledgeRoutes: base !== null && baseRewriteAcknowledgeable() ? [BASE_REWRITE_ROUTE.routeKey] : [],
   });

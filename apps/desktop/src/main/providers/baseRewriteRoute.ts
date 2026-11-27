@@ -1,5 +1,5 @@
 /**
- * Route card 07, compiled in: the local base rewrite on an mlx-lm server the
+ * The local base rewrite route's card, compiled in: a rewrite on an mlx-lm server the
  * owner runs at 127.0.0.1:30113, under the synthetic-text-only exception
  * (nothing yet proves which process answers on that port, so only text that
  * contains "synthetic" is sent).

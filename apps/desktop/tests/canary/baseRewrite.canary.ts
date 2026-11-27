@@ -1,4 +1,4 @@
-// Route card 07's synthetic canary: one fictional, synthetic sentence through
+// The local base rewrite route's synthetic canary: one fictional, synthetic sentence through
 // the real chat core, runner and loopback transport to the local base rewrite
 // service at 127.0.0.1:30113. Opt-in and manual, never part of `npm test`
 // (which runs only tests/**/*.test.ts): it sends nothing without `--send`.

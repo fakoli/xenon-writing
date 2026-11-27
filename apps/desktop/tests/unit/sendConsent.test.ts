@@ -1,4 +1,4 @@
-// The first-send consent rule (route card 07), apart from the UI.
+// The first-send consent rule (the local base rewrite route), apart from the UI.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { canConfirmSend, destinationText, needsSendConfirmation } from '../../src/renderer/sendConsent.ts';

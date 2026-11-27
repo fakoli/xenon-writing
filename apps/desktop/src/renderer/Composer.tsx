@@ -311,7 +311,7 @@ export function Composer({ api, session, early }: { readonly api: DesktopApi | n
     if (request !== null && request.clientRequestId === clientRequestId) void api?.transcribe(request);
   };
 
-  // Route card 07's consent step (sendConsent.ts): before text first leaves the app, ask once per session.
+  // The local base rewrite route's consent step (sendConsent.ts): before text first leaves the app, ask once per session.
   const [sendConfirmed, setSendConfirmed] = useState(false);
   const [confirmingSend, setConfirmingSend] = useState(false);
   const requestRewrite = () => {
@@ -352,7 +352,7 @@ export function Composer({ api, session, early }: { readonly api: DesktopApi | n
     }
   };
 
-  // The Inspect step (route card 07): what is known about an unknown outcome, and one explicit Acknowledge.
+  // The Inspect step (the local base rewrite route): what is known about an unknown outcome, and one explicit Acknowledge.
   const [inspectOpen, setInspectOpen] = useState(false);
   const [ackStatus, setAckStatus] = useState<AcknowledgeStatus>('idle');
   const acknowledging = useRef(false);

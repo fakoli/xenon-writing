@@ -1,5 +1,5 @@
 /**
- * What the Inspect step says about one unknown outcome (route card 07; the
+ * What the Inspect step says about one unknown outcome (the local base rewrite route; the
  * interaction design: an unknown outcome shows Inspect, never a retry that
  * bypasses it). Pure, so the wording is tested apart from the UI, like
  * sendConsent.ts. It states what is known (when the app began sending what,
