@@ -92,9 +92,15 @@ class Layout(unittest.TestCase):
                      'apps/desktop/notes.md', 'tools/other_tool.py', 'tests/test_other.py', 'SECURITY.md', 'notes.md']:
             self.assertIn('path outside the public layout', boundary.layout_findings(name), name)
 
+    def test_app_code_types_pass(self):
+        for folder in ['apps/desktop/src/', 'apps/desktop/tests/']:
+            for suffix in ['.ts', '.tsx', '.css', '.html', '.cjs', '.json']:
+                self.assertEqual(boundary.layout_findings(folder + 'part/name' + suffix), [], folder + suffix)
+
     def test_app_source_and_tests_hold_code_only(self):
         for name in ['apps/desktop/src/reference/plan.md', 'apps/desktop/tests/notes.txt', 'apps/desktop/src/a.swift',
-                     'apps/desktop/src/data.jsonl']:
+                     'apps/desktop/src/data.jsonl', 'apps/desktop/src/a.TS', 'apps/desktop/tests/README',
+                     'apps/desktop/src/.DS_Store']:
             self.assertIn('file type outside the public layout', boundary.layout_findings(name), name)
 
     def test_private_dirs_secret_files_and_submodules(self):

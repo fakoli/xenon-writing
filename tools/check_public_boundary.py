@@ -5,8 +5,9 @@ What it checks (see PUBLIC_BOUNDARY.md):
 
 - Layout: every path must be in the public layout (ALLOWED_* below), so
   private components, design documents and other repositories' files fail
-  by default. Also refused anywhere: private/ and datasets/ directories,
-  .env and other secret files, submodules and Git LFS.
+  by default. The app's source and tests hold code file types only
+  (DESKTOP_CODE_* below). Also refused anywhere: private/ and datasets/
+  directories, .env and other secret files, submodules and Git LFS.
 - Denied terms: machine and app names, the owner's personal email address
   and private repository names, in file contents, file and ref names,
   commit and tag messages and identity names. The terms are not in this
