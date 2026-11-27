@@ -18,9 +18,12 @@
  *
  * Failure mapping, following the job runner's dispatch rule:
  * - input over the route's limits → invalid_input, before dispatch;
- * - the transport proves nothing was sent (NotSent) → route_unavailable;
- * - any other transport failure, or an abort, after dispatch → left to the
- *   runner, which reports unknown_outcome;
+ * - the transport proves the body was not sent (NotSent), including when the
+ *   service did not prove its identity first, and an abort (a cancel) while
+ *   the transport waited for that proof → route_unavailable: nothing of the
+ *   text left, so the outcome is certain;
+ * - any other transport failure, or an abort once the body may have left →
+ *   left to the runner, which reports unknown_outcome;
  * - HTTP 400, 401, 403, 404, 405, 413 or 415 → route_unavailable: the
  *   service refused the request before handling it;
  * - every other status but 200 → unknown_outcome. That includes 409, which
@@ -72,14 +75,16 @@ export interface ChatReply {
 /**
  * Sends one request to the route's single configured destination. Rejects
  * on any failure and stops when the signal aborts. Rejects with NotSent only
- * when it knows no byte of the request was written (for example, the
- * connection was refused); any other rejection may follow a send.
+ * when it knows no byte of the request body was written (for example, the
+ * connection was refused, or the service did not prove its identity before
+ * the body: then only the headers went out, and the service cannot have
+ * acted on the text); any other rejection may follow a send.
  */
 export interface ChatTransport {
   send(request: ChatRequest, signal: AbortSignal): Promise<ChatReply>;
 }
 
-/** A transport's proof that the request never left this process. */
+/** A transport's proof that the request body never left this process. */
 export class NotSent extends Error {
   constructor() {
     super('not sent');

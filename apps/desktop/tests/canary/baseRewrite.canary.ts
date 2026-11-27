@@ -1,6 +1,7 @@
 // The local base rewrite route's synthetic canary: one fictional, synthetic sentence through
 // the real chat core, runner and loopback transport to the local base rewrite
-// service at 127.0.0.1:30113. Opt-in and manual, never part of `npm test`
+// service at 127.0.0.1:30113, through the route's own transport, so the
+// service must prove its identity before the body goes out. Opt-in and manual, never part of `npm test`
 // (which runs only tests/**/*.test.ts): it sends nothing without `--send`.
 //
 //   node tests/canary/baseRewrite.canary.ts          # prints what it would send
@@ -8,12 +9,13 @@
 //
 // It prints the outcome code, or the draft with its identity and timing.
 // Real samples are not allowed here: the route sends synthetic text only.
+import { homedir } from 'node:os';
+
 import type { FailureCode } from '../../src/contracts/session.ts';
 import type { JobSink, ProviderSuccess } from '../../src/main/ipc.ts';
 import { createJobRunner } from '../../src/main/jobs.ts';
-import { BASE_REWRITE_PORT, BASE_REWRITE_ROUTE, createBaseRewriteProvider } from '../../src/main/providers/baseRewriteRoute.ts';
+import { BASE_REWRITE_PORT, BASE_REWRITE_ROUTE, createBaseRewriteProvider, createBaseRewriteTransport } from '../../src/main/providers/baseRewriteRoute.ts';
 import { chatRequestBody } from '../../src/main/providers/chatRewrite.ts';
-import { createLoopbackTransport } from '../../src/main/providers/loopbackHttp.ts';
 
 const TRANSCRIPT = 'Synthetic note for the garden club: the plant swap moves to Saturday at ten, at the community hall.';
 const STEERING = 'Synthetic test: use one short, friendly sentence.';
@@ -21,7 +23,7 @@ const STEERING = 'Synthetic test: use one short, friendly sentence.';
 type Outcome = { ok: true; result: ProviderSuccess } | { ok: false; code: FailureCode };
 
 function run(transcript: string): Promise<{ outcome: Outcome; ms: number }> {
-  const provider = createBaseRewriteProvider(createLoopbackTransport({ port: BASE_REWRITE_PORT }));
+  const provider = createBaseRewriteProvider(createBaseRewriteTransport(homedir()));
   const runner = createJobRunner({ routes: [BASE_REWRITE_ROUTE], providers: [provider] });
   const started = performance.now();
   return new Promise((resolve) => {

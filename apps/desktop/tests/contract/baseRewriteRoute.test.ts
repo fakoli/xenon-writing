@@ -2,19 +2,25 @@
 // nothing here opens a socket. Fictional, synthetic text only.
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import type { MainEvent } from '../../src/contracts/session.ts';
 import type { SessionOpened } from '../../src/contracts/ipc.ts';
 import { ProviderFailure } from '../../src/main/jobs.ts';
 import type { ProviderControl } from '../../src/main/jobs.ts';
 import {
+  BASE_REWRITE_IDENTITY,
   BASE_REWRITE_PORT,
   BASE_REWRITE_ROUTE,
   BASE_REWRITE_SETTINGS,
   ROUTE_SWITCH,
   baseRewriteEnabled,
+  baseRewriteTransportConfig,
   createBaseRewriteProvider,
 } from '../../src/main/providers/baseRewriteRoute.ts';
+import { IDENTITY_SCHEMA, base64url } from '../../src/main/providers/serverIdentity.ts';
 import { NotSent } from '../../src/main/providers/chatRewrite.ts';
 import type { ChatReply, ChatRequest, ChatTransport } from '../../src/main/providers/chatRewrite.ts';
 import { FIXTURE_REWRITE_ROUTE, FIXTURE_TRANSCRIBE_ROUTE, createRoutePolicy } from '../../src/main/routePolicy.ts';
@@ -109,6 +115,45 @@ describe('the local base rewrite route', () => {
     assert.equal(BASE_REWRITE_PORT, 30113);
     assert.deepEqual({ ...BASE_REWRITE_SETTINGS }, { maxTokens: 1024, timeoutMs: 45_000, maxReplyBytes: 100_000, requireMarker: 'synthetic' });
     assert.deepEqual({ ...BASE_REWRITE_ROUTE.limits }, { transcriptBytes: 4_096, steeringBytes: 2_048, draftBytes: 8_192 }, "the card's limits");
+  });
+
+  test('its transport always requires the identity proof, from the compiled-in file under the home directory', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'xenon-home-'));
+    try {
+      for (const given of [home, `${home}/`]) {
+        const config = baseRewriteTransportConfig(given);
+        assert.equal(config.port, 30113);
+        assert.equal(config.identity.model, MODEL);
+        assert.equal(config.identity.proofTimeoutMs, 5_000);
+        assert.ok(config.identity.proofTimeoutMs < BASE_REWRITE_SETTINGS.timeoutMs, 'the proof resolves well before the job timeout');
+        await assert.rejects(config.identity.readSecret(), 'no file yet');
+      }
+      assert.equal(BASE_REWRITE_IDENTITY.file, ['voice', 'llm', 'identity', 'identity.json'].join('/'));
+      const dir = join(home, 'voice', 'llm', 'identity');
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      chmodSync(dir, 0o700);
+      const secret = Uint8Array.from({ length: 32 }, (_, i) => 3 * i);
+      const file = join(dir, 'identity.json');
+      writeFileSync(file, JSON.stringify({ schema: IDENTITY_SCHEMA, model: MODEL, port: 30113, secret: base64url(secret) }), { mode: 0o600 });
+      assert.deepEqual(await baseRewriteTransportConfig(home).identity.readSecret(), secret);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+    const main = readFileSync(new URL('../../src/main/main.ts', import.meta.url), 'utf8');
+    assert.match(main, /createBaseRewriteTransport\(app\.getPath\('home'\)\)/, 'main builds the route with the identity check');
+    assert.doesNotMatch(main, /createLoopbackTransport/, 'and never a bare loopback transport');
+    // No other source file may build a loopback transport, with or without the proof.
+    const src = new URL('../../src/', import.meta.url).pathname;
+    const walk = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : /\.tsx?$/.test(e.name) ? [join(dir, e.name)] : []));
+    const builders = walk(src).filter((file) => /createLoopbackTransport\(/.test(readFileSync(file, 'utf8'))).map((file) => file.slice(src.length));
+    assert.deepEqual(builders.sort(), ['main/providers/baseRewriteRoute.ts', 'main/providers/loopbackHttp.ts'], 'only the card builds one (and the transport defines it)');
+    // An aliased import would slip past the name check: only the card may import the transport at all.
+    const importers = walk(src).filter((file) => /from\s+'[^']*loopbackHttp\.ts'/.test(readFileSync(file, 'utf8'))).map((file) => file.slice(src.length));
+    assert.deepEqual(importers, ['main/providers/baseRewriteRoute.ts'], 'only the card imports the loopback transport');
+    const card = readFileSync(new URL('../../src/main/providers/baseRewriteRoute.ts', import.meta.url), 'utf8');
+    assert.equal(card.match(/createLoopbackTransport\(/g)?.length, 1, 'the card builds one transport');
+    assert.match(card, /return createLoopbackTransport\(baseRewriteTransportConfig\(homeDirectory\)\);/, 'from this checked configuration');
   });
 
   test('only the exact switch turns it on', () => {

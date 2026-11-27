@@ -1,17 +1,26 @@
 /**
  * The local base rewrite route's card, compiled in: a rewrite on an mlx-lm server the
- * owner runs at 127.0.0.1:30113, under the synthetic-text-only exception
- * (nothing yet proves which process answers on that port, so only text that
- * contains "synthetic" is sent).
+ * owner runs at 127.0.0.1:30113, under the synthetic-text-only exception: only
+ * text that contains "synthetic" is sent, until the service's retention is
+ * documented and the owner authorizes real samples.
  *
- * The destination, model, limits and timeout live here, in main, and nowhere
- * a renderer, a reply or the environment can change them. The environment
- * can only turn this one route on, with the exact switch below; it is off by
- * default, and then the app stays offline with the fixture routes.
+ * The destination, model, limits, timeout and identity file live here, in
+ * main, and nowhere a renderer or a reply can change them. The environment
+ * cannot change them either, with one exception: the identity file is found
+ * under the home directory Electron reports, which on macOS follows
+ * `CFFIXED_USER_HOME`. Whoever sets the app's environment runs as the owner
+ * and could read the secret anyway: the app does not defend against the same user.
+ * The environment can only turn this one route on, with the exact switch
+ * below; it is off by default, and then the app stays offline with the
+ * fixture routes. Its transport always checks the service's identity proof
+ * before the transcript is sent (serverIdentity.ts).
  */
 import type { PublishedRoute } from '../../contracts/ipc.ts';
 import { createChatRewriteProvider } from './chatRewrite.ts';
 import type { ChatRewriteProvider, ChatTransport } from './chatRewrite.ts';
+import { readIdentitySecret } from './identityFile.ts';
+import { createLoopbackTransport } from './loopbackHttp.ts';
+import type { LoopbackConfig, ServerIdentityCheck } from './loopbackHttp.ts';
 
 export const BASE_REWRITE_ROUTE: PublishedRoute = Object.freeze({
   routeKey: 'local-base-rewrite',
@@ -28,6 +37,18 @@ export const BASE_REWRITE_ROUTE: PublishedRoute = Object.freeze({
 
 /** The card's only destination port, on 127.0.0.1. */
 export const BASE_REWRITE_PORT = 30_113;
+
+/**
+ * The service's identity file, relative to the user's home directory (the
+ * service writes it at each start), and how long the proof
+ * may take once the connection opens: the service answers the headers at
+ * once, so far less than the job timeout.
+ */
+export const BASE_REWRITE_IDENTITY = Object.freeze({
+  // Written as segments: a path on the user's machine, not a file in this repository.
+  file: ['voice', 'llm', 'identity', 'identity.json'].join('/'),
+  proofTimeoutMs: 5_000,
+});
 
 export const BASE_REWRITE_SETTINGS = Object.freeze({
   maxTokens: 1_024,
@@ -50,6 +71,25 @@ export function baseRewriteEnabled(env: Readonly<Record<string, string | undefin
  */
 export function baseRewriteAcknowledgeable(settings: { readonly requireMarker?: string } = BASE_REWRITE_SETTINGS): boolean {
   return settings.requireMarker === 'synthetic';
+}
+
+/**
+ * The local base rewrite route's only transport: 127.0.0.1 and the card's port, with the
+ * identity proof required before every body. `homeDirectory` comes from
+ * Electron (`app.getPath('home')`), never from a renderer.
+ */
+export function createBaseRewriteTransport(homeDirectory: string): ChatTransport {
+  return createLoopbackTransport(baseRewriteTransportConfig(homeDirectory));
+}
+
+/** The transport's configuration, separate so tests can check it without a socket. */
+export function baseRewriteTransportConfig(homeDirectory: string): LoopbackConfig & { readonly identity: ServerIdentityCheck } {
+  const filePath = `${homeDirectory}/${BASE_REWRITE_IDENTITY.file}`;
+  const expected = { model: BASE_REWRITE_ROUTE.identity, port: BASE_REWRITE_PORT };
+  return {
+    port: BASE_REWRITE_PORT,
+    identity: { model: BASE_REWRITE_ROUTE.identity, proofTimeoutMs: BASE_REWRITE_IDENTITY.proofTimeoutMs, readSecret: () => readIdentitySecret(filePath, expected) },
+  };
 }
 
 export function createBaseRewriteProvider(transport: ChatTransport): ChatRewriteProvider {

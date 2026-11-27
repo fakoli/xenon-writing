@@ -20,8 +20,7 @@ import { callerFromElectronEvent } from './ipc.ts';
 import { createElectronMedia } from './platform/electronCapture.ts';
 import { createElectronChooser } from './platform/electronChooser.ts';
 import { createSyntheticMain } from './synthetic.ts';
-import { BASE_REWRITE_PORT, baseRewriteEnabled } from './providers/baseRewriteRoute.ts';
-import { createLoopbackTransport } from './providers/loopbackHttp.ts';
+import { baseRewriteEnabled, createBaseRewriteTransport } from './providers/baseRewriteRoute.ts';
 
 // Injected by @electron-forge/plugin-vite at build time.
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
@@ -40,7 +39,8 @@ const media =
     : null;
 
 // Main-only: the environment can turn the local base rewrite route on, never choose where it goes.
-const baseRewrite = baseRewriteEnabled(process.env) ? createLoopbackTransport({ port: BASE_REWRITE_PORT }) : undefined;
+// Its transport proves which process answers before any transcript is sent.
+const baseRewrite = baseRewriteEnabled(process.env) ? createBaseRewriteTransport(app.getPath('home')) : undefined;
 
 const { main: desktop } = createSyntheticMain({
   baseRewrite,

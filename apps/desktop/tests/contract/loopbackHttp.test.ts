@@ -4,6 +4,7 @@
 import { after, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 
 import type { FailureCode } from '../../src/contracts/session.ts';
@@ -13,6 +14,8 @@ import { createJobRunner } from '../../src/main/jobs.ts';
 import { CHAT_COMPLETIONS_PATH, NotSent, createChatRewriteProvider } from '../../src/main/providers/chatRewrite.ts';
 import type { ChatRequest } from '../../src/main/providers/chatRewrite.ts';
 import { LOOPBACK_HOST, createLoopbackTransport } from '../../src/main/providers/loopbackHttp.ts';
+import type { ServerIdentityCheck } from '../../src/main/providers/loopbackHttp.ts';
+import { NONCE_HEADER, PROOF_HEADER, computeProof, endpoint } from '../../src/main/providers/serverIdentity.ts';
 
 const MODEL = 'example-base-model';
 const ROUTE: PublishedRoute = Object.freeze({
@@ -94,8 +97,8 @@ function request(overrides: Partial<ChatRequest> = {}): ChatRequest {
 type Outcome = { ok: true; result: ProviderSuccess } | { ok: false; code: FailureCode };
 
 /** Runs one rewrite through the real runner, the chat core and this transport. */
-function runJob(port: number, timeoutMs = 2000) {
-  const provider = createChatRewriteProvider({ route: ROUTE, maxTokens: 512, timeoutMs, maxReplyBytes: 64 * 1024, transport: createLoopbackTransport({ port }) });
+function runJob(port: number, timeoutMs = 2000, identity?: ServerIdentityCheck) {
+  const provider = createChatRewriteProvider({ route: ROUTE, maxTokens: 512, timeoutMs, maxReplyBytes: 64 * 1024, transport: createLoopbackTransport({ port, identity }) });
   const runner = createJobRunner({ routes: [ROUTE], providers: [provider] });
   let resolveOutcome: (outcome: Outcome) => void = () => {};
   const outcome = new Promise<Outcome>((resolve) => (resolveOutcome = resolve));
@@ -296,5 +299,281 @@ describe('loopback transport', () => {
 
   test('a port it cannot use fails at startup', () => {
     for (const port of [0, -1, 65_536, 1.5, Number.NaN]) assert.throws(() => createLoopbackTransport({ port }), Error, String(port));
+  });
+});
+
+// The identity proof (the local base rewrite route, loopback-model-identity/v1).
+// Node's own HTTP server cannot put headers on a 100 Continue, so this stand-in
+// for the model service's launcher speaks raw HTTP over node:net: it answers the
+// headers with a 100 (or misbehaves, per mode), then reads the body and
+// replies the way mlx_lm.server does (HTTP/1.0, then close).
+const SECRET = Uint8Array.from({ length: 32 }, (_, i) => 200 - i);
+const OTHER_SECRET = Uint8Array.from({ length: 32 }, (_, i) => i);
+
+type ProofMode =
+  | 'valid'
+  | 'valid-slow-reply'
+  | 'double-continue'
+  | 'processing'
+  | 'wrong-secret'
+  | 'plain-continue'
+  | 'silent'
+  | 'final-first'
+  | 'other-model'
+  | 'duplicate'
+  | 'swapped-ends'
+  | 'late'
+  | 'valid-then-hang'
+  | 'valid-then-reset';
+
+interface IdentitySeen {
+  headers: Record<string, string>;
+  body: string | undefined;
+  /** Bytes after the headers that arrived before this server's 100 (or with none sent). Must stay 0. */
+  early: number;
+  /** All bytes after the headers. */
+  received: number;
+  continued: boolean;
+}
+
+function identityCheck(overrides: Partial<ServerIdentityCheck> = {}): ServerIdentityCheck {
+  return { model: MODEL, proofTimeoutMs: 1000, readSecret: async () => SECRET, ...overrides };
+}
+
+const identityServers: net.Server[] = [];
+after(() => {
+  for (const server of identityServers) server.close();
+});
+
+function parseHead(head: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const line of head.split('\r\n').slice(1)) {
+    const colon = line.indexOf(':');
+    if (colon > 0) headers[line.slice(0, colon).trim().toLowerCase()] = line.slice(colon + 1).trim();
+  }
+  return headers;
+}
+
+async function identityServe(mode: ProofMode) {
+  const seen: IdentitySeen[] = [];
+  const server = net.createServer((socket) => {
+    let buffer = Buffer.alloc(0);
+    let entry: IdentitySeen | undefined;
+    let length = 0;
+    socket.on('error', () => {});
+    socket.on('data', (chunk: Buffer) => {
+      if (entry !== undefined) {
+        if (!entry.continued) entry.early += chunk.byteLength;
+        entry.received += chunk.byteLength;
+      }
+      buffer = Buffer.concat([buffer, chunk]);
+      if (entry === undefined) {
+        const end = buffer.indexOf('\r\n\r\n');
+        if (end < 0) return;
+        const headers = parseHead(buffer.subarray(0, end).toString('latin1'));
+        buffer = buffer.subarray(end + 4);
+        // Whatever came in the same chunk as the headers was sent before any 100.
+        entry = { headers, body: undefined, early: buffer.byteLength, received: buffer.byteLength, continued: false };
+        seen.push(entry);
+        const current = entry;
+        length = Number(headers['content-length'] ?? 0);
+        const nonce = headers[NONCE_HEADER] ?? '';
+        const server = endpoint(socket.localAddress ?? '', socket.localPort ?? 0);
+        const client = endpoint(socket.remoteAddress ?? '', socket.remotePort ?? 0);
+        const proof = (secret = SECRET, model = MODEL, ends = [server, client]) => computeProof(secret, nonce, ends[0] ?? '', ends[1] ?? '', model);
+        const proofLine = (value: string) => {
+          current.continued = true;
+          return `HTTP/1.1 100 Continue\r\n${PROOF_HEADER}: ${value}\r\n\r\n`;
+        };
+        if (mode === 'valid' || mode === 'valid-slow-reply' || mode === 'valid-then-hang' || mode === 'valid-then-reset') socket.write(proofLine(proof()));
+        else if (mode === 'double-continue') socket.write(proofLine(proof()) + proofLine(proof()));
+        else if (mode === 'processing') socket.write(`HTTP/1.1 102 Processing\r\n${PROOF_HEADER}: ${proof()}\r\n\r\n`);
+        else if (mode === 'wrong-secret') socket.write(proofLine(proof(OTHER_SECRET)));
+        else if (mode === 'other-model') socket.write(proofLine(proof(SECRET, 'mlx-community/other')));
+        else if (mode === 'swapped-ends') socket.write(proofLine(proof(SECRET, MODEL, [client, server])));
+        else if (mode === 'duplicate') socket.write(`HTTP/1.1 100 Continue\r\n${PROOF_HEADER}: ${proof()}\r\n${PROOF_HEADER}: ${proof()}\r\n\r\n`);
+        else if (mode === 'plain-continue') {
+          current.continued = true;
+          socket.write('HTTP/1.1 100 Continue\r\n\r\n');
+        }
+        else if (mode === 'late') setTimeout(() => socket.writable && socket.write(proofLine(proof())), 400);
+        else if (mode === 'final-first') socket.end(`HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n${chatReply('Answered without the text.')}`);
+        // 'silent' waits for a body, like mlx_lm.server without the launcher.
+      }
+      if (entry !== undefined && entry.body === undefined && buffer.byteLength >= length && length > 0) {
+        entry.body = buffer.subarray(0, length).toString('utf8');
+        const answer = () => socket.end(`HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n${chatReply('Meet at noon.')}`);
+        if (mode === 'valid-slow-reply') setTimeout(answer, 400);
+        else if (mode === 'valid-then-reset') socket.resetAndDestroy();
+        else if (mode !== 'valid-then-hang') answer();
+      }
+    });
+  });
+  identityServers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, LOOPBACK_HOST, resolve));
+  return { port: (server.address() as AddressInfo).port, seen };
+}
+
+describe('loopback transport with the identity proof', { timeout: 10_000 }, () => {
+  test('a valid proof: headers first, the body only after the 100, on the same connection', async () => {
+    const { port, seen } = await identityServe('valid');
+    const reply = await createLoopbackTransport({ port, identity: identityCheck() }).send(request(), new AbortController().signal);
+    assert.equal(reply.status, 200);
+    assert.equal(new TextDecoder().decode(reply.body), chatReply('Meet at noon.'));
+    assert.equal(seen.length, 1, 'one connection');
+    assert.equal(seen[0]?.headers.expect, '100-continue');
+    assert.match(seen[0]?.headers[NONCE_HEADER] ?? '', /^[A-Za-z0-9_-]{43}$/);
+    assert.equal(seen[0]?.headers['idempotency-key'], 'job-1');
+    assert.equal(seen[0]?.body, '{"model":"example-base-model"}');
+    assert.equal(seen[0]?.early, 0, 'not one byte of the body before the 100');
+  });
+
+  test('end to end through the runner and the chat core', async () => {
+    const { port, seen } = await identityServe('valid');
+    assert.deepEqual(await runJob(port, 2000, identityCheck()).outcome, { ok: true, result: { actualMode: 'base', actualIdentity: MODEL, text: 'Meet at noon.' } });
+    assert.equal(JSON.parse(seen[0]?.body ?? '{}').messages[1].content, 'Synthetic note: meet at noon.');
+  });
+
+  test('a reply slower than the proof timeout still arrives: the timeout covers the proof only', async () => {
+    const { port, seen } = await identityServe('valid-slow-reply');
+    const reply = await createLoopbackTransport({ port, identity: identityCheck({ proofTimeoutMs: 150 }) }).send(request(), new AbortController().signal);
+    assert.equal(reply.status, 200);
+    assert.equal(seen[0]?.early, 0);
+  });
+
+  test('a second 100 after the body is ignored', async () => {
+    const { port, seen } = await identityServe('double-continue');
+    const reply = await createLoopbackTransport({ port, identity: identityCheck() }).send(request(), new AbortController().signal);
+    assert.equal(reply.status, 200);
+    assert.equal(seen[0]?.body, '{"model":"example-base-model"}');
+    assert.equal(seen[0]?.early, 0);
+  });
+
+  test('a proof on another 1xx is not a 100: nothing is sent', async () => {
+    const { port, seen } = await identityServe('processing');
+    await assert.rejects(createLoopbackTransport({ port, identity: identityCheck({ proofTimeoutMs: 200 }) }).send(request(), new AbortController().signal), NotSent);
+    assert.equal(seen[0]?.received, 0);
+  });
+
+  test('after a valid proof the body may have left: a cancel is an unknown outcome', async () => {
+    const { port, seen } = await identityServe('valid-then-hang');
+    const { outcome, runner } = runJob(port, 10_000, identityCheck());
+    await until(() => seen[0]?.body !== undefined);
+    runner.cancel('3f2a9c1e-0b7d-4e55-9a1c-2d4e6f8a0b1c');
+    assert.deepEqual(await outcome, { ok: false, code: 'unknown_outcome' });
+    assert.equal(seen[0]?.early, 0);
+  });
+
+  test('after a valid proof the body may have left: a reset is an unknown outcome', async () => {
+    const { port, seen } = await identityServe('valid-then-reset');
+    assert.deepEqual(await runJob(port, 2000, identityCheck()).outcome, { ok: false, code: 'unknown_outcome' });
+    assert.equal(JSON.parse(seen[0]?.body ?? '{}').messages[1].content, 'Synthetic note: meet at noon.', 'the whole body arrived before the reset');
+    assert.equal(seen[0]?.early, 0);
+  });
+
+  test('a cancel while waiting for the proof: nothing was sent, so the job is route_unavailable', async () => {
+    const { port, seen } = await identityServe('silent');
+    const { outcome, runner } = runJob(port, 10_000, identityCheck({ proofTimeoutMs: 5000 }));
+    await until(() => seen.length === 1);
+    runner.cancel('3f2a9c1e-0b7d-4e55-9a1c-2d4e6f8a0b1c');
+    assert.deepEqual(await outcome, { ok: false, code: 'route_unavailable' });
+    await delay(50);
+    assert.equal(seen[0]?.received, 0);
+  });
+
+  test('a fresh nonce for every request', async () => {
+    const { port, seen } = await identityServe('valid');
+    const transport = createLoopbackTransport({ port, identity: identityCheck() });
+    await transport.send(request(), new AbortController().signal);
+    await transport.send(request(), new AbortController().signal);
+    assert.notEqual(seen[0]?.headers[NONCE_HEADER], seen[1]?.headers[NONCE_HEADER]);
+  });
+
+  for (const mode of ['wrong-secret', 'other-model', 'swapped-ends', 'duplicate', 'plain-continue', 'final-first'] as const) {
+    test(`${mode}: the body is never sent, and the job is route_unavailable, not an unknown outcome`, async () => {
+      const { port, seen } = await identityServe(mode);
+      await assert.rejects(createLoopbackTransport({ port, identity: identityCheck() }).send(request(), new AbortController().signal), NotSent);
+      assert.deepEqual(await runJob(port, 2000, identityCheck()).outcome, { ok: false, code: 'route_unavailable' });
+      await delay(50);
+      assert.equal(seen.length, 2, 'the headers arrived');
+      assert.ok(seen.every((entry) => entry.received === 0), 'not one byte of the body ever did');
+    });
+  }
+
+  test('no 100 at all (a service without the proof waits for the body): refused once the proof timeout passes', async () => {
+    const { port, seen } = await identityServe('silent');
+    const started = Date.now();
+    await assert.rejects(createLoopbackTransport({ port, identity: identityCheck({ proofTimeoutMs: 200 }) }).send(request(), new AbortController().signal), NotSent);
+    const took = Date.now() - started;
+    assert.ok(took >= 190 && took < 1000, `refused after the proof timeout (${took} ms)`);
+    assert.equal(seen[0]?.received, 0);
+  });
+
+  test('a proof later than the timeout is refused even though it is valid', async () => {
+    const { port, seen } = await identityServe('late');
+    await assert.rejects(createLoopbackTransport({ port, identity: identityCheck({ proofTimeoutMs: 150 }) }).send(request(), new AbortController().signal), NotSent);
+    await delay(400);
+    assert.equal(seen[0]?.received, 0);
+  });
+
+  test('a relay that forwards the nonce to the real service gets a proof for its own connection, which is refused', async () => {
+    const real = await identityServe('valid');
+    // The shadowing process: accepts our connection, opens its own to the real
+    // service, and pipes bytes both ways.
+    let relayed = 0;
+    const relay = net.createServer((inbound) => {
+      relayed += 1;
+      const outbound = net.connect(real.port, LOOPBACK_HOST);
+      inbound.on('error', () => {}).pipe(outbound.on('error', () => {})).pipe(inbound);
+    });
+    identityServers.push(relay);
+    await new Promise<void>((resolve) => relay.listen(0, LOOPBACK_HOST, resolve));
+    const port = (relay.address() as AddressInfo).port;
+    // The relay's port stands in for the card's port: the client checks the proof against that one.
+    await assert.rejects(createLoopbackTransport({ port, identity: identityCheck() }).send(request(), new AbortController().signal), NotSent);
+    await delay(50);
+    assert.equal(relayed, 1);
+    assert.equal(real.seen.length, 1, 'the real service saw the headers through the relay');
+    assert.equal(real.seen[0]?.received, 0, 'and never a byte of the body');
+  });
+
+  test('an unreadable identity sends nothing at all: no connection is opened', async () => {
+    const { port, seen } = await identityServe('valid');
+    const identity = identityCheck({ readSecret: async () => Promise.reject(new Error('missing')) });
+    await assert.rejects(createLoopbackTransport({ port, identity }).send(request(), new AbortController().signal), NotSent);
+    assert.deepEqual(await runJob(port, 2000, identity).outcome, { ok: false, code: 'route_unavailable' });
+    await delay(50);
+    assert.equal(seen.length, 0);
+  });
+
+  test('an abort while waiting for the proof leaves the body unsent', async () => {
+    const { port, seen } = await identityServe('silent');
+    const controller = new AbortController();
+    const sending = createLoopbackTransport({ port, identity: identityCheck({ proofTimeoutMs: 5000 }) }).send(request(), controller.signal);
+    await until(() => seen.length === 1);
+    controller.abort();
+    await assert.rejects(sending, NotSent);
+    await delay(50);
+    assert.equal(seen[0]?.received, 0);
+  });
+
+  test('an abort before the identity is read sends nothing', async () => {
+    const { port, seen } = await identityServe('valid');
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(createLoopbackTransport({ port, identity: identityCheck() }).send(request(), controller.signal), NotSent);
+    await delay(50);
+    assert.equal(seen.length, 0);
+  });
+
+  test('a stopped service with a readable identity is still "not sent"', async () => {
+    const port = await closedPort();
+    await assert.rejects(createLoopbackTransport({ port, identity: identityCheck() }).send(request(), new AbortController().signal), NotSent);
+  });
+
+  test('an identity check needs a positive proof timeout', () => {
+    for (const proofTimeoutMs of [0, -1, 1.5, Number.NaN]) {
+      assert.throws(() => createLoopbackTransport({ port: 30113, identity: identityCheck({ proofTimeoutMs }) }), Error, String(proofTimeoutMs));
+    }
   });
 });

@@ -370,10 +370,11 @@ describe('chat-rewrite provider core', () => {
   });
 
   test('only the local base rewrite route reaches the adapter, and only behind main\'s switch', () => {
-    // synthetic.ts registers it only when given a transport; main.ts creates one only behind the switch.
+    // synthetic.ts registers it only when given a transport; main.ts creates one only behind the switch,
+    // and only the route's own transport, which requires the identity proof.
     const main = readFileSync(new URL('../../src/main/main.ts', import.meta.url), 'utf8');
-    assert.equal(main.match(/createLoopbackTransport\(/g)?.length, 1);
-    assert.match(main, /baseRewriteEnabled\(process\.env\) \? createLoopbackTransport\(\{ port: BASE_REWRITE_PORT \}\) : undefined/);
+    assert.equal(main.match(/createBaseRewriteTransport\(/g)?.length, 1);
+    assert.match(main, /baseRewriteEnabled\(process\.env\) \? createBaseRewriteTransport\(app\.getPath\('home'\)\) : undefined/);
     const ipc = readFileSync(new URL('../../src/main/ipc.ts', import.meta.url), 'utf8');
     assert.doesNotMatch(ipc, /chatRewrite|loopbackHttp/);
   });

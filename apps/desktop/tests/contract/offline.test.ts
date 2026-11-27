@@ -24,6 +24,8 @@ const ENTRY_ALLOWANCES: Readonly<Record<string, readonly string[]>> = {
   'preload/capturePreload.ts': ['electron'],
   // The one loopback transport for an approved chat route (the local base rewrite route): 127.0.0.1 and the card's port only.
   'main/providers/loopbackHttp.ts': ['node:http'],
+  // The local base rewrite route's server identity file: one compiled-in path, read only, owner-only checked.
+  'main/providers/identityFile.ts': ['node:fs/promises'],
 };
 const ELECTRON_BINDINGS: Readonly<Record<string, readonly string[]>> = {
   'main/main.ts': ['app', 'BrowserWindow', 'clipboard', 'ipcMain', 'nativeTheme', 'session'],
