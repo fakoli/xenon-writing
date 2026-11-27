@@ -49,7 +49,7 @@ test.beforeEach(async () => {
     // The trap loads before the app's main module, the way Playwright loads its own hook. Chromium's fake
     // input device means no test ever opens a real microphone (macOS's permission state is stubbed per test).
     args: ['-r', TRAP, ...(appearance === undefined ? [] : ['-r', LAUNCH_APPEARANCE]), '--use-fake-device-for-media-stream', APP_DIR],
-    // Never inherit route card 07's switch from the shell: this test runs the fixture routes only.
+    // Never inherit the local base rewrite route's switch from the shell: this test runs the fixture routes only.
     env: {
       ...withoutRouteSwitch(process.env),
       XENON_OFFLINE_PROFILE: path.join(dir, 'profile'),

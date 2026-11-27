@@ -22,7 +22,7 @@ const ENTRY_ALLOWANCES: Readonly<Record<string, readonly string[]>> = {
   // macOS microphone permission and the hidden capture window (Packet E).
   'main/platform/electronCapture.ts': ['electron'],
   'preload/capturePreload.ts': ['electron'],
-  // The one loopback transport for an approved chat route (route card 07): 127.0.0.1 and the card's port only.
+  // The one loopback transport for an approved chat route (the local base rewrite route): 127.0.0.1 and the card's port only.
   'main/providers/loopbackHttp.ts': ['node:http'],
 };
 const ELECTRON_BINDINGS: Readonly<Record<string, readonly string[]>> = {

@@ -1,4 +1,4 @@
-// Synthetic contract tests for the Inspect step (route card 07):
+// Synthetic contract tests for the Inspect step (the local base rewrite route):
 // the acknowledgeOutcome intent in main, the outcome reports that let a
 // reload or later session reach Inspect, the preload façade, and the full
 // journey through the real job runner, chat provider and reducer with a
@@ -37,7 +37,7 @@ interface Sent {
 const caller = (windowId = 1, overrides: Partial<Caller> = {}): Caller => ({ windowId, frameUrl: TRUSTED_URL, isTopFrame: true, ...overrides });
 
 /**
- * Main with route card 07's rewrite route (acknowledgeable), a fixture
+ * Main with the local base rewrite route (acknowledgeable), a fixture
  * rewrite route and the fixture transcription route (neither is), and job
  * ports that only record what they are given, so each test settles jobs itself.
  */
@@ -361,7 +361,7 @@ describe('acknowledgment refusals have no side effect', () => {
     refused(h, () => h.acknowledge(s, tJob, 'ack2'), 'unsupported', 'the fixture transcription route');
   });
 
-  test('a route left out of acknowledgeRoutes is unsupported, even route card 07', () => {
+  test('a route left out of acknowledgeRoutes is unsupported, even the local base rewrite route', () => {
     const h = harness({ acknowledgeRoutes: [] });
     const s = h.open();
     const jobId = h.unknownRewrite(s);
@@ -416,7 +416,7 @@ describe('acknowledgment refusals have no side effect', () => {
   });
 });
 
-describe('route card 07 is acknowledgeable only while synthetic-only', () => {
+describe('the local base rewrite route is acknowledgeable only while synthetic-only', () => {
   test('the marker decides it', () => {
     assert.equal(BASE_REWRITE_SETTINGS.requireMarker, 'synthetic');
     assert.equal(baseRewriteAcknowledgeable(), true);
@@ -430,7 +430,7 @@ describe('acknowledgeRoutes at startup', () => {
     assert.throws(() => harness({ acknowledgeRoutes: [FIXTURE_REWRITE_ROUTE.routeKey] }), /non-fixture/);
     assert.throws(() => harness({ acknowledgeRoutes: [FIXTURE_TRANSCRIBE_ROUTE.routeKey] }), /non-fixture/);
     assert.throws(() => harness({ acknowledgeRoutes: ['not-a-route'] }), /registered/);
-    assert.throws(() => harness({ routes: [FIXTURE_REWRITE_ROUTE, FIXTURE_TRANSCRIBE_ROUTE] }), /registered/, 'route card 07 off, but named');
+    assert.throws(() => harness({ routes: [FIXTURE_REWRITE_ROUTE, FIXTURE_TRANSCRIBE_ROUTE] }), /registered/, 'the local base rewrite route off, but named');
   });
 });
 
@@ -473,7 +473,7 @@ describe('outcome reports across the bridge', () => {
   });
 });
 
-/** A throwaway transport for route card 07's chat provider: it never opens a socket and answers each send in turn. */
+/** A throwaway transport for the local base rewrite route's chat provider: it never opens a socket and answers each send in turn. */
 function scriptedTransport(...replies: ChatReply[]): ChatTransport & { readonly sends: ChatRequest[] } {
   const sends: ChatRequest[] = [];
   return {
@@ -493,8 +493,8 @@ function chatReply(text: string): ChatReply {
 }
 
 describe('the journey through the real composition', () => {
-  test('route card 07 on: an unknown outcome, acknowledged, lets the next rewrite through; one send each', async () => {
-    // A 500 after the request was sent is an unknown outcome under route card 07's outage rule.
+  test('the local base rewrite route on: an unknown outcome, acknowledged, lets the next rewrite through; one send each', async () => {
+    // A 500 after the request was sent is an unknown outcome under the local base rewrite route's outage rule.
     const transport = scriptedTransport({ status: 500, contentType: 'text/plain', body: new Uint8Array() }, chatReply('Synthetic test: meet Thursday at noon.'));
     const listeners = new Set<(payload: unknown) => void>();
     let next = 0;
@@ -555,7 +555,7 @@ describe('the journey through the real composition', () => {
     assert.equal(state.draft?.text, 'Synthetic test: meet Thursday at noon.');
   });
 
-  test('route card 07 off: nothing is acknowledgeable', async () => {
+  test('the local base rewrite route off: nothing is acknowledgeable', async () => {
     const { main } = createSyntheticMain({ clipboard: { writeText() {} }, send() {} });
     main.registerWindow(1, TRUSTED_URL);
     const opened = main.handle(CHANNELS.createSession, caller(), { v: 1 });

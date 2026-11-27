@@ -1,5 +1,5 @@
 /**
- * The Inspect step (route card 07): what is and isn't known about
+ * The Inspect step (the local base rewrite route): what is and isn't known about
  * an unknown outcome, and one explicit Acknowledge where the route's card
  * allows it. An inline region like the first-send confirmation, not a modal:
  * focus moves to its heading when it opens, Escape or Close returns focus to

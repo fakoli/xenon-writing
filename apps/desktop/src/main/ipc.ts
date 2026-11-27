@@ -15,7 +15,7 @@
  * (an `outcome.unresolved` event, and `SessionOpened.unresolved` for sessions
  * opened later), so the gate is never invisible. It clears only through
  * main-side `reconcile`, or the user's acknowledgment in Inspect for a route
- * whose card allows it (route card 07); see acknowledgmentRefusal.
+ * whose card allows it (the local base rewrite route); see acknowledgmentRefusal.
  *
  * Electron is not imported. App wiring must:
  * - register `invoke` for each channel via `ipcMain.handle`, converting the
@@ -135,7 +135,7 @@ export interface DesktopMainOptions {
   readonly now?: () => number;
   /**
    * Route keys whose card lets the user acknowledge an unknown outcome
-   * (today only route card 07's `local-base-rewrite`). Each must
+   * (today only the `local-base-rewrite` route). Each must
    * be a registered route that is not a fixture, or creation throws. Every
    * other route's unknown outcome clears only through `reconcile` or a restart.
    */
@@ -224,7 +224,7 @@ export interface AcknowledgmentFacts {
   readonly requestIdUsed: boolean;
   /** The named job is an unknown outcome main reported and has not cleared. */
   readonly unresolved: boolean;
-  /** That job's route card lets the user acknowledge (today only route card 07). */
+  /** That job's route card lets the user acknowledge (today only the local base rewrite route). */
   readonly acknowledgeable: boolean;
   /** Jobs still running, app-wide. */
   readonly running: number;
@@ -599,7 +599,7 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
   }
 
   /**
-   * The user acknowledges one unknown outcome in Inspect (route card 07).
+   * The user acknowledges one unknown outcome in Inspect (the local base rewrite route).
    * Accepted only for the exact job ID main reported, on a route
    * whose card allows it, with nothing running and a fresh request ID; see
    * acknowledgmentRefusal. Any session may acknowledge, because the gate is
