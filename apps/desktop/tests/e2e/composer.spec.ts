@@ -739,6 +739,131 @@ for (const colorScheme of ['light', 'dark'] as const) {
 }
 
 
+/** The status line when a new draft arrives below the visible area (UI review; the owner's choice). */
+const DRAFT_BELOW = '✓ Draft ready for review. It’s below the transcript; scroll down to read and copy it.';
+const DRAFT_READY = '✓ Draft ready for review.';
+
+/** Rewrites and completes a draft without scrolling the page (a DOM click, not Playwright's). */
+async function draftWithoutScrolling(page: Page, text: string, jobId: string) {
+  await page.evaluate(() => document.getElementById('rewrite-button')!.click());
+  await complete(page, text, jobId);
+  await expect(preview(page)).toHaveText(text);
+}
+
+/** Starts recording each text the status line takes, as a screen reader's live region would see it. */
+function recordStatusChanges(page: Page) {
+  return page.evaluate(() => {
+    const line = document.getElementById('source-status')!;
+    const seen: string[] = ((window as Win).__statusSeen = []);
+    new MutationObserver(() => seen.push(line.textContent ?? '')).observe(line, { childList: true, subtree: true, characterData: true });
+  });
+}
+
+for (const colorScheme of ['light', 'dark'] as const) {
+  test(`in one column, the status line says a new draft is below, once, until Copy draft is in sight (${colorScheme}; UI review)`, async ({ page }) => {
+    await page.emulateMedia({ colorScheme });
+    await page.setViewportSize({ width: 760, height: 760 });
+    await open(page);
+    await transcript(page).fill('Meet at noon.');
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await recordStatusChanges(page);
+    await draftWithoutScrolling(page, 'Meet at noon, please.', 'j1');
+    await expect(status(page)).toHaveText(DRAFT_BELOW);
+    // One change when the draft arrives: never the plain line first and the words a moment later.
+    expect(await win<string[]>(page, '__statusSeen')).not.toContain(DRAFT_READY);
+    // It is true: Copy draft is out of sight.
+    await expect(copyButton(page)).not.toBeInViewport();
+    expect((await new AxeBuilder({ page }).setLegacyMode().withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze()).violations).toEqual([]);
+    // Half in sight is not in sight: the words stay. Wholly in sight, they go, and scrolling back up does not bring them back.
+    const scrollCopyTo = (shown: number) =>
+      page.evaluate((shown) => {
+        const { top, height } = document.getElementById('copy-draft')!.getBoundingClientRect();
+        window.scrollBy(0, top + height * shown - document.documentElement.clientHeight);
+      }, shown);
+    await scrollCopyTo(0.5);
+    await expect(copyButton(page)).toBeInViewport();
+    await expect(copyButton(page)).not.toBeInViewport({ ratio: 1 });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect(status(page)).toHaveText(DRAFT_BELOW);
+    await scrollCopyTo(1);
+    await expect(copyButton(page)).toBeInViewport({ ratio: 1 });
+    await expect(status(page)).toHaveText(DRAFT_READY);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await expect(copyButton(page)).not.toBeInViewport();
+    await expect(status(page)).toHaveText(DRAFT_READY);
+    // Nor does the line coming back after a transcript candidate is kept.
+    await transcribed(page, await startTranscription(page), 'Meet at one.');
+    await page.getByRole('button', { name: 'Keep existing' }).click();
+    await expect(status(page)).toHaveText(DRAFT_READY);
+  });
+}
+
+// Short windows, so Copy draft is out of sight in either layout: only one column says so.
+for (const [width, below] of [
+  [919, true],
+  [920, false],
+  [1280, false],
+] as const) {
+  test(`the draft-below words follow the one-column layout: ${width}px wide (UI review)`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 420 });
+    await open(page);
+    await transcript(page).fill('Meet at noon.');
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await draftWithoutScrolling(page, 'Meet at noon, please.', 'j1');
+    await expect(copyButton(page)).not.toBeInViewport({ ratio: 1 });
+    await expect(status(page)).toHaveText(below ? DRAFT_BELOW : DRAFT_READY);
+    // The draft pane really is under the source pane exactly when the words say so.
+    const stacked = await page.evaluate(
+      () => document.querySelector('.pane.draft')!.getBoundingClientRect().top >= document.querySelector('.pane.source')!.getBoundingClientRect().bottom,
+    );
+    expect(stacked).toBe(below);
+  });
+}
+
+test('a change of layout ends the words for good (UI review)', async ({ page }) => {
+  // A short window, so Copy draft stays out of sight in both layouts: only the change of layout ends the words.
+  await page.setViewportSize({ width: 760, height: 420 });
+  await open(page);
+  await transcript(page).fill('Meet at noon.');
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await draftWithoutScrolling(page, 'Meet at noon, please.', 'j1');
+  await expect(status(page)).toHaveText(DRAFT_BELOW);
+  // Two columns: the draft is beside the source, not below it.
+  await page.setViewportSize({ width: 1280, height: 420 });
+  await expect(copyButton(page)).not.toBeInViewport({ ratio: 1 });
+  await expect(status(page)).toHaveText(DRAFT_READY);
+  // Back in one column, still out of sight: the words stay gone rather than being announced again.
+  await page.setViewportSize({ width: 760, height: 420 });
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await expect(copyButton(page)).not.toBeInViewport();
+  await expect(status(page)).toHaveText(DRAFT_READY);
+});
+
+test('a draft that arrives with Copy draft in sight gets no words, not even for a moment (UI review)', async ({ page }) => {
+  await page.setViewportSize({ width: 760, height: 760 });
+  await open(page);
+  await transcript(page).fill('Meet at noon.');
+  await steering(page).fill('Shorter.');
+  // Scrolled down so Copy draft is in sight when the draft arrives.
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  await expect(copyButton(page)).toBeInViewport({ ratio: 1 });
+  await recordStatusChanges(page);
+  await draftWithoutScrolling(page, 'Noon, please.', 'j1');
+  await expect(status(page)).toHaveText(DRAFT_READY);
+  expect(await win<string[]>(page, '__statusSeen')).not.toContain(DRAFT_BELOW);
+});
+
+test('in a window tall enough to show the draft, one column says nothing extra (UI review)', async ({ page }) => {
+  await page.setViewportSize({ width: 760, height: 1800 });
+  await open(page);
+  await transcript(page).fill('Meet at noon.');
+  await recordStatusChanges(page);
+  await draftWithoutScrolling(page, 'Meet at noon, please.', 'j1');
+  await expect(copyButton(page)).toBeInViewport({ ratio: 1 });
+  await expect(status(page)).toHaveText(DRAFT_READY);
+  expect(await win<string[]>(page, '__statusSeen')).not.toContain(DRAFT_BELOW);
+});
+
 /** Rendered copy and accessible names use typographic apostrophes, quotes and ellipses (UI review). */
 async function expectTypographicCopy(page: Page) {
   const copy = await page.evaluate(() =>

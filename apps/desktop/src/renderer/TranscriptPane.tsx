@@ -52,7 +52,7 @@ const BLOCKER_TEXT: Record<RewriteBlocker, string> = {
 /** Blockers the user has to act on (over a limit, an unknown outcome), shown as warnings. */
 const WARNING_BLOCKERS: ReadonlySet<RewriteBlocker> = new Set(['transcript_too_large', 'steering_too_large', 'unresolved_outcome']);
 
-function statusLine(state: SessionState, blocker: RewriteBlocker | null, kind: JobKind, filled: boolean): { icon: string; text: string } {
+function statusLine(state: SessionState, blocker: RewriteBlocker | null, kind: JobKind, filled: boolean, draftBelow: boolean): { icon: string; text: string } {
   if (state.pending !== null) return { icon: '…', text: BLOCKER_TEXT.pending };
   if (state.transcription !== null) return { icon: '…', text: 'Transcribing the audio. You can keep editing.' };
   // While an unknown outcome holds work back, an older notice ("You can try again", "cancelled") would mislead: say it is paused.
@@ -65,7 +65,10 @@ function statusLine(state: SessionState, blocker: RewriteBlocker | null, kind: J
   if (state.candidate !== null) return { icon: 'ⓘ', text: 'A transcript from the audio is ready. Replace your text with it, or keep your text.' };
   if (filled) return { icon: '✓', text: 'Transcript added from the audio. Review it before you rewrite.' };
   if (blocker !== null) return { icon: WARNING_BLOCKERS.has(blocker) ? '⚠' : 'ⓘ', text: BLOCKER_TEXT[blocker] };
-  if (draftStatus(state) === 'current') return { icon: '✓', text: 'Draft ready for review.' };
+  if (draftStatus(state) === 'current') {
+    // From the UI review, the owner's choice: in one column the draft can arrive out of sight.
+    return { icon: '✓', text: draftBelow ? 'Draft ready for review. It’s below the transcript; scroll down to read and copy it.' : 'Draft ready for review.' };
+  }
   return { icon: 'ⓘ', text: 'Ready to rewrite.' };
 }
 
@@ -169,12 +172,14 @@ export function TranscriptPane(props: {
   readonly onCancel: () => void;
   /** Before the first send to a route that leaves the app: where the text would go, and the answers. */
   readonly sendConfirm: SendConfirm | null;
+  /** The panes are stacked and the current draft arrived with Copy draft out of sight, not yet seen. */
+  readonly draftBelow: boolean;
   /** While an unknown outcome holds new work back: the Inspect button and, when open, its panel. */
   readonly inspect: (InspectControls & { readonly open: boolean; readonly onOpen: () => void }) | null;
 }) {
   const { state, audio } = props;
   const blocker = rewriteBlocker(state);
-  const status = statusLine(state, blocker, props.kind, props.filled);
+  const status = statusLine(state, blocker, props.kind, props.filled, props.draftBelow);
   const canCancel = state.pending !== null || state.transcription !== null;
   const asrBlocker = transcribeBlocker(state);
   const canTranscribe = audio.canTranscribe && !audio.recording && state.selectedAsset !== null && asrBlocker === null;

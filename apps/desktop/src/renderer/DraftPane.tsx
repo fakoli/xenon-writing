@@ -63,7 +63,7 @@ export function DraftPane({
       </div>
       <div className="actions">
         {/* A stale draft is copied only from a button that names it as the previous draft. */}
-        <button type="button" className="primary" aria-disabled={!canCopy} aria-describedby="copy-status" onClick={() => void copy()}>
+        <button id="copy-draft" type="button" className="primary" aria-disabled={!canCopy} aria-describedby="copy-status" onClick={() => void copy()}>
           {status === 'previous' ? 'Copy previous draft' : 'Copy draft'}
         </button>
       </div>

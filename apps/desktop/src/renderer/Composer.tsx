@@ -4,7 +4,7 @@
  * recording.ts and the first-send consent rule in sendConsent.ts; this file
  * dispatches intents and forwards frozen requests to Packet C's façade.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { CONTRACT_VERSION } from '../contracts/session.ts';
 import type { FailureCode, MainEvent, OutcomeReport, RouteDescriptor } from '../contracts/session.ts';
 import type { AudioSummary, CapabilityAction, CaptureEndReason, PublishedRoute } from '../contracts/ipc.ts';
@@ -96,6 +96,46 @@ function useSession(api: DesktopApi | null, init: SessionInit, early: EarlyEvent
   return { ...view, apply, latest: () => (ref.current as SessionView).state };
 }
 
+/** The two-column layout, the same query as the `.panes` rule in styles.css. */
+const TWO_COLUMNS = '(min-width: 920px)';
+const isStacked = (): boolean => !window.matchMedia(TWO_COLUMNS).matches;
+/** Calls `changed` whenever the panes switch between one and two columns. */
+function onLayoutChange(changed: () => void): () => void {
+  const query = window.matchMedia(TWO_COLUMNS);
+  query.addEventListener('change', changed);
+  return () => query.removeEventListener('change', changed);
+}
+/** Whether an element's bottom edge is inside the visible area. In one column only Copy draft's own status line comes after it. */
+function inSight(element: Element): boolean {
+  return element.getBoundingClientRect().bottom <= document.documentElement.clientHeight;
+}
+
+/**
+ * From the UI review (the owner's choice, 2026-11-26): in one column a new draft can
+ * arrive below the visible area. Then the status line says where it is, until Copy draft first comes
+ * into sight or the layout changes. Measured before paint, so the line changes once when the draft arrives.
+ */
+function useDraftBelow(draftHandle: string | null): boolean {
+  const [below, setBelow] = useState<string | null>(null);
+  useLayoutEffect(() => {
+    const copy = document.getElementById('copy-draft');
+    if (draftHandle === null || copy === null || !isStacked() || inSight(copy)) {
+      setBelow(null);
+      return;
+    }
+    setBelow(draftHandle);
+    // Once Copy draft has been in sight the words have done their job; a change of layout ends them too.
+    const seen = new IntersectionObserver(() => inSight(copy) && setBelow(null), { threshold: [0, 1] });
+    seen.observe(copy);
+    const stopFollowing = onLayoutChange(() => setBelow(null));
+    return () => {
+      seen.disconnect();
+      stopFollowing();
+    };
+  }, [draftHandle]);
+  return draftHandle !== null && below === draftHandle;
+}
+
 /** A capture ending that arrived while the start was still pending. */
 interface EarlyEnd {
   readonly handle: string;
@@ -120,6 +160,7 @@ function useRecorder() {
 
 export function Composer({ api, session, early }: { readonly api: DesktopApi | null; readonly session: SessionInit; readonly early?: EarlyEvents }) {
   const { state, kind, filled, apply, latest } = useSession(api, session, early);
+  const draftBelow = useDraftBelow(state.draft?.draftHandle ?? null);
   const importing = useRef(false);
   const { rec, send, current } = useRecorder();
   const capture = api !== null && (session.actions ?? []).includes('capture');
@@ -440,6 +481,7 @@ export function Composer({ api, session, early }: { readonly api: DesktopApi | n
           onSteering={(text) => apply({ type: 'edit.steering', text })}
           onRewrite={requestRewrite}
           onCancel={cancel}
+          draftBelow={draftBelow}
           sendConfirm={
             confirmingSend && state.route !== null
               ? {
