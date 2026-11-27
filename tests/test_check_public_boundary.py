@@ -143,10 +143,27 @@ class Content(unittest.TestCase):
         self.assertEqual([line for line, _ in found], [1])
 
     def test_host_details(self):
-        for text in [b'cd /Users/someone/code', b'ssh 192.168.1.20', b'host 10.0.0.7', b'box.local:22', b'node.ts.net']:
+        for text in [b'cd /Users/someone/code', b'ssh 192.168.1.20', b'host 10.0.0.7', b'box.local:22', b'node.ts.net',
+                     b'peer 100.64.0.1', b'peer 100.101.102.103', b'peer 100.127.255.254']:
             self.assertTrue(boundary.host_findings('apps/desktop/src/a.ts', text), text)
-        for text in [b'127.0.0.1:30113', b'/home/runner/work', b'/Users/<you>/code', b'name.invalid', b'$HOME/x']:
+        for text in [b'127.0.0.1:30113', b'/home/runner/work', b'/Users/<you>/code', b'name.invalid', b'$HOME/x',
+                     b'peer 100.63.255.255', b'peer 100.128.0.1', b'version 100.64']:
             self.assertEqual(boundary.host_findings('apps/desktop/src/a.ts', text), [], text)
+
+    def test_design_document_pointers(self):
+        for text in [b'see route card 07', b'Route Card 12 says', b'route\ncard 3', b'per 03-trust', b'(01-interaction)',
+                     b'06-pipeline-route']:
+            self.assertTrue(boundary.design_findings('apps/desktop/src/a.ts', text), text)
+        for text in [b'route cards are checked at startup', b"the route card's port", b'released 2026-11-03',
+                     b'a 3-trust split', b'Invalid route card: duplicate route key']:
+            self.assertEqual(boundary.design_findings('apps/desktop/src/a.ts', text), [], text)
+        self.assertEqual(boundary.design_findings('tests/test_check_public_boundary.py', b'route card 07'), [])
+
+    def test_design_pointers_are_checked_now_but_not_in_history(self):
+        text = b'see route card 07\n'
+        current = boundary.content_findings('apps/desktop/src/a.ts', text, TERMS, current=True)
+        self.assertIn((1, 'design document number'), current)
+        self.assertEqual(boundary.content_findings('apps/desktop/src/a.ts', text, TERMS), [])
 
     def test_urls_and_packages_are_not_pointers(self):
         text = b'https://example.com/a/b.md and @scope/pkg/x.js and react-dom/client and "$TMP/base/x.py"\n'
@@ -221,6 +238,24 @@ class Repo(unittest.TestCase):
         self.assertIn(f'author email is not {boundary.ALLOWED_EMAIL}', out)
         self.assertIn(f'committer name is not {boundary.ALLOWED_NAME}', out)
         self.assertNotIn('someone@example.com', out)
+
+    def test_design_pointers_fail_the_tree_and_new_messages_but_not_history(self):
+        (self.repo / 'README.md').write_text('hello\nsee route card 07\n')
+        self.commit()
+        code, out = self.run_tool('--tree')
+        self.assertEqual(code, 1)
+        self.assertIn('README.md:2: design document number', out)
+        self.assertEqual(self.run_tool('--history')[0], 0, 'history predates the rule')
+        (self.repo / 'README.md').write_text('hello\nper 03-trust\n')
+        self.git('add', '-A')
+        code, out = self.run_tool('--staged')
+        self.assertEqual(code, 1)
+        self.assertIn('staged README.md:2: design document short name', out)
+        message = Path(self.tmp.name) / 'MSG'
+        message.write_text('Follow 03-trust\n')
+        code, out = self.run_tool('--message-file', str(message))
+        self.assertEqual(code, 1)
+        self.assertIn('commit message:1: design document short name', out)
 
     def test_term_in_a_file_name_is_found_and_withheld(self):
         (self.repo / 'tools' / 'quokka-lantern-notes.md').write_text('x\n')

@@ -18,6 +18,12 @@ What it checks (see PUBLIC_BOUNDARY.md):
   without them. Matching ignores case and every non-alphanumeric character,
   and finds a term inside longer words too.
 - Secrets: the key and token patterns in tools/check_repository.py.
+- Host details: home-directory paths, private network addresses (LAN and
+  tailnet ranges) and local host names.
+- Design-document pointers: a route card's number or a design document's
+  short name. Checked in the tree, staged files and new commit messages,
+  not in history: earlier commits used them before this rule, and
+  rewriting history is the owner's call.
 - Dangling pointers: a path-like reference in a file (say `docs/x.md` or
   `../other/file.py`) that names no file in the tree, which is how pointers
   to private material show up.
@@ -92,9 +98,20 @@ DIR_POINTER = re.compile(rb'(?<![\w.:/@$~-])((?:\.{1,2}/)*(?:[\w.-]+/){2,})(?![\
 HOST_PATTERNS = {
     'home path': re.compile(rb'(?:/Users/|/home/)(?!(?:<|\$|\{|runner/|you/|USER))[A-Za-z0-9._-]+/'),
     'LAN address': re.compile(rb'\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b'),
+    # The shared address range (100.64.0.0/10) that tailnets use for their machines.
+    'tailnet address': re.compile(rb'\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b'),
     'local host name': re.compile(rb'\b[A-Za-z0-9-]+\.(?:local|lan|ts\.net)\b'),
 }
 HOST_SKIP = {'tools/check_public_boundary.py', 'tests/test_check_public_boundary.py'}
+# Design documents kept out of this repository, named by number or short name (a route card's number). Only
+# the current tree, staged files and new messages: history predates the rule. The tools' own
+# tests name look-alikes on purpose.
+DESIGN_POINTER_PATTERNS = {
+    'design document number': re.compile(rb'(?i)\broute\s+card\s+\d'),
+    'design document short name': re.compile(
+        rb'(?i)\b0\d-(?:interaction|components|trust|delivery|platform|pipeline|route)'),
+}
+DESIGN_SKIP = {'tools/check_public_boundary.py', 'tests/test_check_public_boundary.py'}
 # git commit -v appends the diff below this line; git drops it from the message.
 SCISSORS = re.compile(rb'^\S -{24} >8 -{24}$', re.M)
 
@@ -244,8 +261,22 @@ def host_findings(name, data):
     return sorted(found)
 
 
-def content_findings(name, data, terms, paths=None, message=False):
+def design_findings(name, data):
+    if name in DESIGN_SKIP:
+        return []
+    found = set()
+    for label, pattern in DESIGN_POINTER_PATTERNS.items():
+        match = pattern.search(data)
+        if match:
+            found.add((data.count(b'\n', 0, match.start()) + 1, label))
+    return sorted(found)
+
+
+def content_findings(name, data, terms, paths=None, message=False, current=False):
+    """`current`: the tree, staged files or a new message, which also get the rules history predates."""
     found = term_findings(data, terms) + secret_findings(data) + host_findings(name, data)
+    if current:
+        found += design_findings(name, data)
     if data.startswith(LFS_POINTER):
         found.append((1, 'Git LFS pointer'))
     if pathlib.PurePosixPath(name).name == '.gitattributes' and b'filter=lfs' in data:
@@ -306,8 +337,8 @@ class Report:
             self.add(f'{prefix}{shown}: name contains a denied term')
         return shown
 
-    def content(self, place, name, data, paths=None, message=False):
-        for line, reason in content_findings(name, data, self.terms, paths, message):
+    def content(self, place, name, data, paths=None, message=False, current=False):
+        for line, reason in content_findings(name, data, self.terms, paths, message, current):
             self.add(f'{place}:{line}: {reason}')
 
     def identity(self, where, role, line):
@@ -360,7 +391,7 @@ def scan_tree(root, report):
         path = pathlib.Path(root) / name
         if mode != b'160000' and path.is_file() and not path.is_symlink():
             report.blobs += 1
-            report.content(shown, name, path.read_bytes(), paths)
+            report.content(shown, name, path.read_bytes(), paths, current=True)
 
 
 def scan_staged(root, report):
@@ -374,7 +405,7 @@ def scan_staged(root, report):
     for oid, _type, data in read_objects(root, list(blobs)):
         report.blobs += 1
         shown, name = blobs[oid]
-        report.content(f'staged {shown}', name, data, paths)
+        report.content(f'staged {shown}', name, data, paths, current=True)
     for var, role in (('GIT_AUTHOR_IDENT', 'author'), ('GIT_COMMITTER_IDENT', 'committer')):
         report.identity('pending commit', role, f'{role} '.encode() + git(root, 'var', var).strip())
 
@@ -394,7 +425,7 @@ def scan_message_file(root, report, path):
     if cut:
         data = data[:cut.start()]
     paths = history_paths(root) | {name for _, _, name in index_entries(root)}
-    report.content('commit message', '', data, paths, message=True)
+    report.content('commit message', '', data, paths, message=True, current=True)
 
 
 def check_object_headers(report, where, headers):
