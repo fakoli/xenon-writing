@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -143,10 +144,48 @@ class Content(unittest.TestCase):
         self.assertEqual([line for line, _ in found], [1])
 
     def test_host_details(self):
-        for text in [b'cd /Users/someone/code', b'ssh 192.168.1.20', b'host 10.0.0.7', b'box.local:22', b'node.ts.net']:
+        for text in [b'cd /Users/someone/code', b'ssh 192.168.1.20', b'host 10.0.0.7', b'box.local:22', b'node.ts.net',
+                     b'peer 100.64.0.1', b'peer 100.69.0.1', b'peer 100.70.0.1', b'peer 100.85.4.2',
+                     b'peer 100.101.102.103', b'peer 100.115.9.9', b'peer 100.120.0.1', b'peer 100.127.255.254']:
             self.assertTrue(boundary.host_findings('apps/desktop/src/a.ts', text), text)
-        for text in [b'127.0.0.1:30113', b'/home/runner/work', b'/Users/<you>/code', b'name.invalid', b'$HOME/x']:
+        for text in [b'127.0.0.1:30113', b'/home/runner/work', b'/Users/<you>/code', b'name.invalid', b'$HOME/x',
+                     b'peer 100.63.255.255', b'peer 100.128.0.1', b'peer 100.200.1.1', b'version 100.64', b'id 1100.64.1.1']:
             self.assertEqual(boundary.host_findings('apps/desktop/src/a.ts', text), [], text)
+
+    def design(self, text):
+        return [reason for _, reason in boundary.design_findings('apps/desktop/src/a.ts', text)]
+
+    def test_design_document_numbers(self):
+        # Invented numbers and names only: these fixtures must not name a real design document.
+        for text in [b'see route card 12', b'Route Card 12 says', b'ROUTE CARD 3', b'route card\n * 12', b'route\n * card 12',
+                     b'route card\n// 12', b'route card\n<!-- 12', b'route card #9', b'route-card 12', b'route card no. 9',
+                     b'route card no 9', b'route card number 12', b'route card nr 12', b'route cards 12 and 13', b'RouteCard12',
+                     b'route card **12**', b'route card `12`', b'route card _12_', b'route card/12', b'route card (12)',
+                     b'route card: 12', b'route card [12]', b'route card "12"', b'route card, 12', b'route card\xc2\xa012',
+                     b'see route card 9.', b'route card 12, then', b'the card 05 limits', b'card 05, then', b'cards 05',
+                     b'card #05', b'card (05)', b'card no. 05', b'route card **(12)**', b'route **(card 12',
+                     b'route card no. (12)', b'route card no (12)']:
+            self.assertIn('design document number', self.design(text), text)
+        for text in [b'route cards are checked at startup', b"the route card's port", b'Invalid route card: duplicate route key',
+                     b'route card 127.0.0.1', b'route card 30113', b'route card 123', b'route card 12.5', b'route card 4,096',
+                     b'route card.\n\n3. Next item', b'route card --- (12)', b'route ---- (card 12', b'route card no. --- 12',
+                     b'card 9', b'card 12', b'card 051', b'card 05.5', b'card 05,5', b'discard 05', b'reroute card 12']:
+            self.assertEqual(self.design(text), [], text)
+
+    def test_numbered_document_names(self):
+        for text in [b'per 04-gizmos', b'(01-sample)', b'09-other-note', b'02-GIZMOS', b'03-abc', b'00-zeta', b'04_gizmos',
+                     b'04\xe2\x80\x90gizmos', b'04\xe2\x80\x91gizmos', b'04\xe2\x80\x95gizmos']:
+            self.assertEqual(self.design(text), ['numbered document name'], text)
+        for text in [b'released 2026-11-03-notes', b'job-01-widgets', b'x01-gizmos', b'v1.01-beta', b'16-bit audio',
+                     b'a 3-step plan', b'04-ab', b'14-gizmos']:
+            self.assertEqual(self.design(text), [], text)
+
+    def test_design_pointers_skip_the_tools_own_fixtures_and_count_only_when_current(self):
+        for name in ['tests/test_check_public_boundary.py', 'tools/check_public_boundary.py']:
+            self.assertEqual(boundary.design_findings(name, b'route card 12'), [], name)
+        text = b'see route card 12\n'
+        self.assertIn((1, 'design document number'), boundary.content_findings('apps/desktop/src/a.ts', text, TERMS, current=True))
+        self.assertEqual(boundary.content_findings('apps/desktop/src/a.ts', text, TERMS), [])
 
     def test_urls_and_packages_are_not_pointers(self):
         text = b'https://example.com/a/b.md and @scope/pkg/x.js and react-dom/client and "$TMP/base/x.py"\n'
@@ -221,6 +260,104 @@ class Repo(unittest.TestCase):
         self.assertIn(f'author email is not {boundary.ALLOWED_EMAIL}', out)
         self.assertIn(f'committer name is not {boundary.ALLOWED_NAME}', out)
         self.assertNotIn('someone@example.com', out)
+
+    def test_design_pointers_fail_the_tree_staged_files_and_new_messages(self):
+        (self.repo / 'README.md').write_text('hello\nsee route card 12\n')
+        self.commit('Follow 04-gizmos')
+        code, out = self.run_tool('--tree')
+        self.assertEqual(code, 1)
+        self.assertIn('README.md:2: design document number', out)
+        code, out = self.run_tool('--history')
+        self.assertEqual(code, 1, 'without the cutoff commit in this clone, nothing is exempt')
+        self.assertIn('message:1: numbered document name', out)
+        (self.repo / 'README.md').write_text('hello\nper 04-gizmos\n')
+        self.git('add', '-A')
+        code, out = self.run_tool('--staged')
+        self.assertEqual(code, 1)
+        self.assertIn('staged README.md:2: numbered document name', out)
+        message = Path(self.tmp.name) / 'MSG'
+        message.write_text('Follow 04-gizmos\n')
+        code, out = self.run_tool('--message-file', str(message))
+        self.assertEqual(code, 1)
+        self.assertIn('commit message:1: numbered document name', out)
+
+    def history_with_cutoff(self, cutoff):
+        report = boundary.Report(boundary.parse_terms(TERM_LIST))
+        saved = boundary.DESIGN_RULE_SINCE
+        boundary.DESIGN_RULE_SINCE = cutoff
+        try:
+            old_env = {k: os.environ.get(k) for k in self.env}
+            os.environ.update(self.env)
+            try:
+                boundary.scan_history(str(self.repo), report)
+            finally:
+                for k, v in old_env.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+        finally:
+            boundary.DESIGN_RULE_SINCE = saved
+        return sorted(report.findings)
+
+    def test_history_exempts_only_the_cutoff_and_its_ancestors(self):
+        src = self.repo / 'apps' / 'desktop' / 'src'
+        src.mkdir(parents=True)
+        (src / '03-old.ts').write_text('export {};\n')
+        (self.repo / 'README.md').write_text('hello\nsee route card 12\n')
+        self.commit('Follow 04-gizmos')
+        (src / '03-old.ts').unlink()
+        self.commit('Tidy')
+        cutoff = self.git('rev-parse', 'HEAD').decode().strip()
+        self.assertEqual(self.history_with_cutoff(cutoff), [], 'the cutoff and its ancestors predate the rule')
+        (self.repo / 'tools' / '05-widgets.md').write_text('x\n')
+        self.commit('Add notes for route card 13')
+        found = self.history_with_cutoff(cutoff)
+        reasons = ' | '.join(found)
+        self.assertIn('message:1: design document number', reasons)
+        self.assertIn('05-widgets.md: name is a numbered document name', reasons)
+        self.assertNotIn('README.md:2', reasons, 'an unchanged file from before the cutoff stays exempt')
+        (self.repo / 'README.md').write_text('hello\nsee route card 12\nand 06-gizmos\n')
+        self.commit('Edit')
+        self.assertIn('README.md:3: numbered document name', ' | '.join(self.history_with_cutoff(cutoff)))
+
+    def test_numbered_file_names_fail_in_the_tree_and_staged(self):
+        src = self.repo / 'apps' / 'desktop' / 'src'
+        src.mkdir(parents=True)
+        (src / '04-gizmos.ts').write_text('export {};\n')
+        self.commit()
+        code, out = self.run_tool('--tree')
+        self.assertEqual(code, 1)
+        self.assertIn('apps/desktop/src/04-gizmos.ts: name is a numbered document name', out)
+        (src / '05-widgets.ts').write_text('export {};\n')
+        self.git('add', '-A')
+        code, out = self.run_tool('--staged')
+        self.assertEqual(code, 1)
+        self.assertIn('staged apps/desktop/src/05-widgets.ts: name is a numbered document name', out)
+
+    def test_ref_names_are_checked(self):
+        self.commit()
+        self.git('branch', 'notes-04-gizmos')
+        self.git('branch', '04-gizmos')
+        code, out = self.run_tool('--history')
+        self.assertEqual(code, 1)
+        self.assertIn('refs/heads/04-gizmos: name is a numbered document name', out)
+        self.assertNotIn('notes-04-gizmos: name', out)
+        report = boundary.Report(boundary.parse_terms(TERM_LIST))
+        boundary.scan_push_refs(report, io.StringIO('refs/heads/04-gizmos 1111 refs/heads/04-gizmos 2222\n'))
+        self.assertIn('push ref refs/heads/04-gizmos: name is a numbered document name', report.findings)
+
+    def test_a_clone_without_the_cutoff_exempts_nothing_and_says_so(self):
+        self.commit('Follow 04-gizmos')
+        code, out = self.run_tool('--history')
+        self.assertEqual(code, 1)
+        self.assertIn('is not in this clone, so no commit is exempt', out)
+
+    def test_tag_messages_are_always_checked(self):
+        self.commit()
+        cutoff = self.git('rev-parse', 'HEAD').decode().strip()
+        self.git('tag', '-a', 'v1', '-m', 'Ships route card 12')
+        self.assertIn('message:1: design document number', ' | '.join(self.history_with_cutoff(cutoff)))
 
     def test_term_in_a_file_name_is_found_and_withheld(self):
         (self.repo / 'tools' / 'quokka-lantern-notes.md').write_text('x\n')

@@ -18,6 +18,12 @@ What it checks (see PUBLIC_BOUNDARY.md):
   without them. Matching ignores case and every non-alphanumeric character,
   and finds a term inside longer words too.
 - Secrets: the key and token patterns in tools/check_repository.py.
+- Host details: home-directory paths, private network addresses (LAN and
+  tailnet ranges) and local host names.
+- Design-document pointers: a route card's number, or a numbered document
+  name (two digits starting with 0, a hyphen, a word), in contents, file
+  names and commit messages. Not in DESIGN_RULE_SINCE and its ancestors,
+  which used them before this rule; rewriting those is the owner's call.
 - Dangling pointers: a path-like reference in a file (say `docs/x.md` or
   `../other/file.py`) that names no file in the tree, which is how pointers
   to private material show up.
@@ -92,9 +98,31 @@ DIR_POINTER = re.compile(rb'(?<![\w.:/@$~-])((?:\.{1,2}/)*(?:[\w.-]+/){2,})(?![\
 HOST_PATTERNS = {
     'home path': re.compile(rb'(?:/Users/|/home/)(?!(?:<|\$|\{|runner/|you/|USER))[A-Za-z0-9._-]+/'),
     'LAN address': re.compile(rb'\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b'),
+    # The shared address range tailnets give their machines: 100.64.0.0 to 100.127.255.255.
+    'tailnet address': re.compile(rb'\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b'),
     'local host name': re.compile(rb'\b[A-Za-z0-9-]+\.(?:local|lan|ts\.net)\b'),
 }
 HOST_SKIP = {'tools/check_public_boundary.py', 'tests/test_check_public_boundary.py'}
+# Design documents kept out of this repository, named by a route card's number or a numbered
+# document name. Generic on purpose, so this file names none of them, and cautious: it also
+# refuses some innocent names (a date like 01-Jan, "08-bit", "card 02"), which can be reworded.
+# Punctuation, markdown, a non-breaking space or one line break with a comment marker may sit
+# between the words, but not a blank line; a number followed by more digits, a comma or a decimal
+# or a comma and digits (an address, a port, a size) is not a route card's number.
+_PUNCT = rb'(?:[^\w\n]|_)'
+_SEP = _PUNCT + rb'{0,4}(?:\n[ \t]*(?:\*|//|#|<!--)?' + _PUNCT + rb'{0,4})?'
+_NO = rb'(?:(?:no|nr|number)\.?[^\w\n]{0,3})?'
+_NUM_END = rb'(?!\d|[.,]\d)'
+DESIGN_POINTER_PATTERNS = {
+    'design document number': re.compile(
+        rb'(?i)\broute' + _SEP + rb'cards?' + _SEP + _NO + rb'\d{1,2}' + _NUM_END
+        + rb'|\bcards?' + _SEP + _NO + rb'0\d' + _NUM_END),
+    'numbered document name': re.compile(rb'(?i)(?<![\w.-])0\d(?:[-_]|\xe2\x80[\x90-\x95])[a-z]{3,}'),
+}
+DESIGN_SKIP = {'tools/check_public_boundary.py', 'tests/test_check_public_boundary.py'}
+# The design-pointer rule covers every commit except this one and its ancestors, which used such
+# names before the rule. Rewriting them is the owner's call. A clone without it exempts nothing.
+DESIGN_RULE_SINCE = 'c582c98b3bd0d1f3f69dfef9a4d96744367d8b82'
 # git commit -v appends the diff below this line; git drops it from the message.
 SCISSORS = re.compile(rb'^\S -{24} >8 -{24}$', re.M)
 
@@ -244,8 +272,22 @@ def host_findings(name, data):
     return sorted(found)
 
 
-def content_findings(name, data, terms, paths=None, message=False):
+def design_findings(name, data):
+    if name in DESIGN_SKIP:
+        return []
+    found = set()
+    for label, pattern in DESIGN_POINTER_PATTERNS.items():
+        match = pattern.search(data)
+        if match:
+            found.add((data.count(b'\n', 0, match.start()) + 1, label))
+    return sorted(found)
+
+
+def content_findings(name, data, terms, paths=None, message=False, current=False):
+    """`current`: the tree, staged files or a new message, which also get the rules history predates."""
     found = term_findings(data, terms) + secret_findings(data) + host_findings(name, data)
+    if current:
+        found += design_findings(name, data)
     if data.startswith(LFS_POINTER):
         found.append((1, 'Git LFS pointer'))
     if pathlib.PurePosixPath(name).name == '.gitattributes' and b'filter=lfs' in data:
@@ -297,17 +339,20 @@ class Report:
             return name
         return f'<name withheld ({hits[0][1]}){" " + oid[:12] if oid else ""}>'
 
-    def path(self, prefix, name, mode, oid):
+    def path(self, prefix, name, mode, oid, current=False):
         self.paths += 1
         shown = self.display(name, oid)
         for reason in layout_findings(name, mode):
             self.add(f'{prefix}{shown}: {reason}')
+        if current:
+            for _, reason in design_findings('', name.encode('utf-8', 'surrogateescape')):
+                self.add(f'{prefix}{shown}: name is a {reason}')
         if shown != name:
             self.add(f'{prefix}{shown}: name contains a denied term')
         return shown
 
-    def content(self, place, name, data, paths=None, message=False):
-        for line, reason in content_findings(name, data, self.terms, paths, message):
+    def content(self, place, name, data, paths=None, message=False, current=False):
+        for line, reason in content_findings(name, data, self.terms, paths, message, current):
             self.add(f'{place}:{line}: {reason}')
 
     def identity(self, where, role, line):
@@ -356,11 +401,11 @@ def scan_tree(root, report):
     entries = index_entries(root)
     paths = {name for _, _, name in entries}
     for mode, oid, name in entries:
-        shown = report.path('', name, mode, oid)
+        shown = report.path('', name, mode, oid, current=True)
         path = pathlib.Path(root) / name
         if mode != b'160000' and path.is_file() and not path.is_symlink():
             report.blobs += 1
-            report.content(shown, name, path.read_bytes(), paths)
+            report.content(shown, name, path.read_bytes(), paths, current=True)
 
 
 def scan_staged(root, report):
@@ -368,13 +413,13 @@ def scan_staged(root, report):
     paths = {name for _, _, name in entries}
     blobs = {}
     for mode, oid, name in entries:
-        shown = report.path('staged ', name, mode, oid)
+        shown = report.path('staged ', name, mode, oid, current=True)
         if mode != b'160000':
             blobs.setdefault(oid, (shown, name))
     for oid, _type, data in read_objects(root, list(blobs)):
         report.blobs += 1
         shown, name = blobs[oid]
-        report.content(f'staged {shown}', name, data, paths)
+        report.content(f'staged {shown}', name, data, paths, current=True)
     for var, role in (('GIT_AUTHOR_IDENT', 'author'), ('GIT_COMMITTER_IDENT', 'committer')):
         report.identity('pending commit', role, f'{role} '.encode() + git(root, 'var', var).strip())
 
@@ -394,7 +439,7 @@ def scan_message_file(root, report, path):
     if cut:
         data = data[:cut.start()]
     paths = history_paths(root) | {name for _, _, name in index_entries(root)}
-    report.content('commit message', '', data, paths, message=True)
+    report.content('commit message', '', data, paths, message=True, current=True)
 
 
 def check_object_headers(report, where, headers):
@@ -413,11 +458,23 @@ def split_object(raw):
     return head.split(b'\n'), message
 
 
+def exempt_commits(root):
+    """DESIGN_RULE_SINCE and its ancestors, or nothing if this clone lacks it."""
+    try:
+        return set(git(root, 'rev-list', f'{DESIGN_RULE_SINCE}^{{commit}}').decode().split())
+    except subprocess.CalledProcessError:
+        print(f'note: {DESIGN_RULE_SINCE[:12]} is not in this clone, so no commit is exempt from the design-pointer rule',
+              file=sys.stderr)
+        return set()
+
+
 def scan_history(root, report):
     if git(root, 'rev-parse', '--is-shallow-repository').strip() == b'true':
         raise RuntimeError('shallow clone: the history check needs the full history (fetch-depth: 0)')
     commits = git(root, 'rev-list', '--exclude=refs/stash', '--all').decode().split()
     blobs = {}
+    old_blobs = set()
+    exempt = exempt_commits(root)
     messages = []
     every_path = set()
     for oid, _type, raw in read_objects(root, commits):
@@ -427,7 +484,8 @@ def scan_history(root, report):
         check_object_headers(report, where, headers)
         if any(marker in message for marker in SIGNATURE_MARKERS):
             report.add(f'{where}: message carries a signature')
-        messages.append((where, message))
+        new = oid not in exempt
+        messages.append((where, message, new))
         rows = [row for row in git(root, 'ls-tree', '-r', '-z', oid).split(b'\0') if row]
         entries = []
         for row in rows:
@@ -437,15 +495,17 @@ def scan_history(root, report):
         paths = {name for _, _, name in entries}
         every_path |= paths
         for mode, blob, name in entries:
-            shown = report.path(f'{where} ', name, mode, blob)
+            shown = report.path(f'{where} ', name, mode, blob, current=new)
             if mode != b'160000':
                 blobs.setdefault(blob, (where, shown, name, paths))
+                if not new:
+                    old_blobs.add(blob)
     for oid, _type, data in read_objects(root, list(blobs)):
         report.blobs += 1
         where, shown, name, paths = blobs[oid]
-        report.content(f'{where} {shown}', name, data, paths)
-    for where, message in messages:
-        report.content(f'{where} message', '', message, every_path, message=True)
+        report.content(f'{where} {shown}', name, data, paths, current=oid not in old_blobs)
+    for where, message, new in messages:
+        report.content(f'{where} message', '', message, every_path, message=True, current=new)
     scan_refs(root, report)
 
 
@@ -458,6 +518,8 @@ def scan_refs(root, report):
         shown = report.display(ref, oid)
         if shown != ref:
             report.add(f'ref {shown}: name contains a denied term')
+        for _, reason in design_findings('', ref.encode('utf-8', 'surrogateescape')):
+            report.add(f'ref {shown}: name is a {reason}')
         seen = 0
         while kind == 'tag' and seen < 16:
             seen += 1
@@ -467,7 +529,7 @@ def scan_refs(root, report):
             check_object_headers(report, where, headers)
             if any(marker in message for marker in SIGNATURE_MARKERS):
                 report.add(f'{where}: message carries a signature')
-            report.content(f'{where} message', '', message)
+            report.content(f'{where} message', '', message, current=True)
             fields = dict(line.split(b' ', 1) for line in headers if b' ' in line)
             oid, kind = fields.get(b'object', b'').decode(), fields.get(b'type', b'').decode()
         if kind != 'commit':
@@ -480,6 +542,8 @@ def scan_push_refs(report, stream):
             shown = report.display(ref)
             if shown != ref:
                 report.add(f'push ref {shown}: name contains a denied term')
+            for _, reason in design_findings('', ref.encode('utf-8', 'surrogateescape')):
+                report.add(f'push ref {shown}: name is a {reason}')
 
 
 def main(argv=None):
