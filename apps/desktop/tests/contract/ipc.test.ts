@@ -288,10 +288,15 @@ describe('sessions and handles', () => {
 
     // A reload opens a new session; resending the same body must not dispatch.
     const reloaded = open(h);
+    assert.deepEqual(reloaded.unresolved.map((o) => o.jobId), [accepted.jobId], 'the reload is told what holds it back');
     assert.equal(code(rewrite(h, reloaded)), 'denied');
     assert.equal(h.submitted.length, 1);
     assert.equal(h.main.reconcile(accepted.jobId), true);
-    assert.equal(h.sent.length, sentBefore + 1, 'only the refusal; the closed session gets no reconcile');
+    assert.deepEqual(
+      h.sent.slice(sentBefore).map((s) => [s.event.sessionId, s.event.type]),
+      [[reloaded.sessionId, 'rewrite.failed'], [reloaded.sessionId, 'outcome.cleared']],
+      'the refusal and the cleared gate; the closed session gets no reconcile',
+    );
     assert.equal(rewrite(h, reloaded, { clientRequestId: 'r2' }).ok, true);
   });
 
@@ -538,14 +543,18 @@ describe('job outcomes', () => {
     const s = open(h);
     const accepted = value<RewriteAccepted>(rewrite(h, s));
     lastSubmit(h).sink.failed('provider_said_maybe' as FailureCode);
-    const failure = h.events().at(-1);
+    const failure = h.events().at(-2);
     assert.deepEqual(failure && failure.type === 'rewrite.failed' ? failure.code : null, 'unknown_outcome');
+    assert.equal(h.events().at(-1)?.type, 'outcome.unresolved');
     assert.equal(code(rewrite(h, s, { clientRequestId: 'r2' })), 'denied');
 
     assert.equal(h.main.reconcile('not-a-job'), false);
     assert.equal(h.main.reconcile(accepted.jobId), true);
     assert.equal(h.main.reconcile(accepted.jobId), false, 'reconciles once');
-    assert.deepEqual(h.events().at(-1), { ...envelope(s), type: 'rewrite.reconciled', clientRequestId: 'r1', jobId: accepted.jobId });
+    assert.deepEqual(h.events().slice(-2), [
+      { ...envelope(s), type: 'rewrite.reconciled', clientRequestId: 'r1', jobId: accepted.jobId },
+      { ...envelope(s), type: 'outcome.cleared', kind: 'rewrite', jobId: accepted.jobId },
+    ]);
     assert.equal(rewrite(h, s, { clientRequestId: 'r3' }).ok, true);
   });
 
@@ -572,7 +581,7 @@ describe('job outcomes', () => {
     const s = open(h);
     assert.equal(rewrite(h, s).ok, true);
     const types = h.events().map((e) => (e.type === 'rewrite.failed' ? `failed:${e.code}` : e.type));
-    assert.deepEqual(types, ['rewrite.accepted', 'failed:unknown_outcome']);
+    assert.deepEqual(types, ['rewrite.accepted', 'failed:unknown_outcome', 'outcome.unresolved']);
   });
 
   test('a synchronous completion still arrives after accepted', () => {
@@ -652,6 +661,7 @@ describe('cancel and copy', () => {
 
   test('there is no clipboard-read or generic channel', () => {
     assert.deepEqual(Object.keys(CHANNELS).sort(), [
+      'acknowledgeOutcome',
       'cancel',
       'chooseAudio',
       'closeSession',
@@ -716,6 +726,7 @@ describe('preload façade', () => {
     const api = createDesktopApi(fake.transport);
     assert.ok(Object.isFrozen(api));
     assert.deepEqual(Object.keys(api).sort(), [
+      'acknowledgeOutcome',
       'cancel',
       'chooseAudio',
       'closeSession',

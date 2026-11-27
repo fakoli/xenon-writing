@@ -6,12 +6,14 @@ import { modeLabel } from './DraftPane.tsx';
 import { RecorderButtons, RecorderPanel } from './Recorder.tsx';
 import { statusKind } from './statusKind.ts';
 import type { RecorderControls } from './Recorder.tsx';
+import { InspectPanel } from './Inspect.tsx';
+import type { InspectControls } from './Inspect.tsx';
 
 /** What failed, what was kept, and what can be done next. Never provider text. */
 const NOTICE_TEXT: Record<NoticeCode, string> = {
   result_outdated: 'Draft not applied because the text changed while it was being written. Your edits and the previous draft are kept.',
   cancelled: 'Rewrite cancelled. Your edits and the previous draft are kept.',
-  unknown_outcome: 'Response not applied: its outcome is unknown. Your edits and the previous draft are kept. New rewrites are paused until it is reconciled.',
+  unknown_outcome: 'Response not applied: its outcome is unknown. Your edits and the previous draft are kept. New rewrites are paused. Inspect says what is known.',
   timed_out: 'Rewrite timed out. Your edits and the previous draft are kept. You can try again.',
   denied: 'Rewrite was refused because another job is running or an earlier outcome is still unknown. Your edits and the previous draft are kept. If a job is running, try again when it finishes.',
   unsupported: 'This route does not support that request. Your edits and the previous draft are kept.',
@@ -19,13 +21,14 @@ const NOTICE_TEXT: Record<NoticeCode, string> = {
   route_unavailable: 'The processing route is unavailable. Your edits and the previous draft are kept. You can try again.',
   provider_mismatch: 'Response not applied: it came from a different model than requested. Your edits and the previous draft are kept.',
   invalid_response: 'Response not applied: it was malformed. Your edits and the previous draft are kept. You can try again.',
+  outcome_cleared: 'Unknown outcome cleared. Nothing was sent again. You can rewrite when you’re ready.',
 };
 
 /** Transcription outcomes: what happened to the audio's text, and that the user's text is kept. */
 const TRANSCRIBE_NOTICE_TEXT: Record<NoticeCode, string> = {
   result_outdated: 'Transcript not applied because your text or the chosen audio changed. Your text is kept.',
   cancelled: 'Transcription cancelled. Your text is kept.',
-  unknown_outcome: 'Transcript not applied: its outcome is unknown. Your text is kept. New work is paused until it is reconciled.',
+  unknown_outcome: 'Transcript not applied: its outcome is unknown. Your text is kept. New work is paused. Inspect says what is known.',
   timed_out: 'Transcription timed out. Your text is kept. You can try again.',
   denied: 'Transcription was refused because another job is running or an earlier outcome is still unknown. Your text is kept. If a job is running, try again when it finishes.',
   unsupported: 'This route does not transcribe that audio. Your text is kept.',
@@ -33,13 +36,14 @@ const TRANSCRIBE_NOTICE_TEXT: Record<NoticeCode, string> = {
   route_unavailable: 'The transcription route is unavailable. Your text is kept. You can try again.',
   provider_mismatch: 'Transcript not applied: it came from a different model than requested. Your text is kept.',
   invalid_response: 'Transcript not applied: it was malformed. Your text is kept. You can try again.',
+  outcome_cleared: 'Unknown outcome cleared. Nothing was sent again. You can transcribe when you’re ready.',
 };
 
 const BLOCKER_TEXT: Record<RewriteBlocker, string> = {
   no_route: 'Rewrite is unavailable: no processing route is set up yet.',
   pending: 'Rewriting. You can keep editing.',
   awaiting_cancellation: 'Waiting for the cancelled rewrite to finish before starting another.',
-  unresolved_outcome: 'New rewrites are paused until an unknown outcome is reconciled.',
+  unresolved_outcome: 'New rewrites are paused because an earlier outcome is unknown. Inspect says what is known.',
   empty_transcript: 'Type a transcript to rewrite.',
   transcript_too_large: 'The transcript is over this route’s size limit. Shorten it to rewrite.',
   steering_too_large: 'Steering is over this route’s size limit. Shorten it to rewrite.',
@@ -51,8 +55,13 @@ const WARNING_BLOCKERS: ReadonlySet<RewriteBlocker> = new Set(['transcript_too_l
 function statusLine(state: SessionState, blocker: RewriteBlocker | null, kind: JobKind, filled: boolean): { icon: string; text: string } {
   if (state.pending !== null) return { icon: '…', text: BLOCKER_TEXT.pending };
   if (state.transcription !== null) return { icon: '…', text: 'Transcribing the audio. You can keep editing.' };
-  // A cancel is the user's own choice, so it is information, not a warning.
-  if (state.notice !== null) return { icon: state.notice === 'cancelled' ? 'ⓘ' : '⚠', text: (kind === 'transcribe' ? TRANSCRIBE_NOTICE_TEXT : NOTICE_TEXT)[state.notice] };
+  // While an unknown outcome holds work back, an older notice ("You can try again", "cancelled") would mislead: say it is paused.
+  const pausedOverNotice = blocker === 'unresolved_outcome' && state.notice !== 'unknown_outcome';
+  // A cancel is the user's own choice, so it is information, not a warning; a cleared gate is good news.
+  if (state.notice !== null && !pausedOverNotice) {
+    const icon = state.notice === 'cancelled' ? 'ⓘ' : state.notice === 'outcome_cleared' ? '✓' : '⚠';
+    return { icon, text: (kind === 'transcribe' ? TRANSCRIBE_NOTICE_TEXT : NOTICE_TEXT)[state.notice] };
+  }
   if (state.candidate !== null) return { icon: 'ⓘ', text: 'A transcript from the audio is ready. Replace your text with it, or keep your text.' };
   if (filled) return { icon: '✓', text: 'Transcript added from the audio. Review it before you rewrite.' };
   if (blocker !== null) return { icon: WARNING_BLOCKERS.has(blocker) ? '⚠' : 'ⓘ', text: BLOCKER_TEXT[blocker] };
@@ -131,7 +140,7 @@ export interface AudioControls {
 const TRANSCRIBE_BLOCKER_TEXT: Partial<Record<TranscribeBlocker, string>> = {
   candidate_open: 'Replace or keep the waiting transcript before transcribing again.',
   awaiting_cancellation: 'Waiting for the cancelled job to finish before transcribing.',
-  unresolved_outcome: 'Transcribing is paused until an unknown outcome is reconciled.',
+  unresolved_outcome: 'Transcribing is paused because an earlier outcome is unknown.',
 };
 
 function seconds(durationMs: number): string {
@@ -160,6 +169,8 @@ export function TranscriptPane(props: {
   readonly onCancel: () => void;
   /** Before the first send to a route that leaves the app: where the text would go, and the answers. */
   readonly sendConfirm: SendConfirm | null;
+  /** While an unknown outcome holds new work back: the Inspect button and, when open, its panel. */
+  readonly inspect: (InspectControls & { readonly open: boolean; readonly onOpen: () => void }) | null;
 }) {
   const { state, audio } = props;
   const blocker = rewriteBlocker(state);
@@ -256,8 +267,20 @@ export function TranscriptPane(props: {
         <button type="button" aria-disabled={!canCancel} onClick={() => canCancel && props.onCancel()}>
           Cancel
         </button>
+        {props.inspect !== null ? (
+          <button
+            id="inspect-button"
+            type="button"
+            aria-expanded={props.inspect.open}
+            aria-controls={props.inspect.open ? 'inspect-panel' : undefined}
+            onClick={props.inspect.open ? props.inspect.onClose : props.inspect.onOpen}
+          >
+            Inspect unknown outcome
+          </button>
+        ) : null}
       </div>
       {props.sendConfirm !== null ? <SendConfirmation confirm={props.sendConfirm} /> : null}
+      {props.inspect !== null && props.inspect.open ? <InspectPanel controls={props.inspect} /> : null}
       <p id="source-status" className="status" role="status" tabIndex={-1} data-kind={statusKind(status.icon)}>
         <span aria-hidden="true">{status.icon}</span> {status.text}
       </p>

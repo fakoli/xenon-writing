@@ -161,18 +161,29 @@ test('the built app exposes only the façade and publishes the fixture routes; r
     process: typeof (globalThis as Record<string, unknown>).process,
   }));
   expect(surface).toEqual({
-    xenon: ['cancel', 'chooseAudio', 'closeSession', 'copyDraft', 'createSession', 'discardCapture', 'getCapabilities', 'microphoneStatus', 'onEvent', 'rewrite', 'startCapture', 'stopCapture', 'transcribe'],
+    xenon: ['acknowledgeOutcome', 'cancel', 'chooseAudio', 'closeSession', 'copyDraft', 'createSession', 'discardCapture', 'getCapabilities', 'microphoneStatus', 'onEvent', 'rewrite', 'startCapture', 'stopCapture', 'transcribe'],
     require: 'undefined',
     process: 'undefined',
   });
   await expect(page.getByText('Synthetic fixture · fixture-v1')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Import audio' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Transcribe' })).toBeVisible();
+  // No outcome is unknown in a fresh app, so nothing is paused and Inspect is not offered.
+  await expect(page.getByRole('button', { name: 'Inspect unknown outcome' })).toHaveCount(0);
   // Microphone ports exist only on macOS, the only target; elsewhere capture is not offered.
   await expect(page.getByRole('button', { name: 'Record', exact: true })).toHaveCount(process.platform === 'darwin' ? 1 : 0);
   // Hunspell would download dictionaries on Windows and Linux; macOS spellchecks locally with the OS.
   // The trap records any dictionary download, which is the evidence on Linux CI.
   expect(await app.evaluate(({ session }) => session.defaultSession.isSpellCheckerEnabled())).toBe(process.platform === 'darwin');
+
+  // Last, because it opens a new session from the page: the acknowledgment channel is wired through Electron to main, which refuses a job it never reported (the fixture routes never allow one).
+  const acknowledged = await page.evaluate(async () => {
+    type Api = { createSession(): Promise<any>; acknowledgeOutcome(request: object): Promise<unknown> };
+    const api = (window as unknown as { xenon: Api }).xenon;
+    const opened = await api.createSession();
+    return api.acknowledgeOutcome({ v: 1, sessionId: opened.value.sessionId, epoch: opened.value.epoch, clientRequestId: 'ack-probe', jobId: 'never-reported' });
+  });
+  expect(acknowledged).toEqual({ ok: false, code: 'denied' });
 });
 
 test('typed transcript → synthetic rewrite → explicit copy, end to end in Electron', async () => {

@@ -7,8 +7,8 @@
  * whatever the renderer claims. The preload façade builds payloads with
  * exactly these fields and forwards only events that match EVENT_SCHEMAS.
  */
-import { CONTRACT_VERSION, ROUTE_MODES, isToken } from './session.ts';
-import type { Envelope, FailureCode, MainEvent, RouteDescriptor } from './session.ts';
+import { CONTRACT_VERSION, OUTCOME_CLEARANCES, OUTCOME_KINDS, ROUTE_MODES, isToken } from './session.ts';
+import type { Envelope, FailureCode, MainEvent, OutcomeReport, RouteDescriptor } from './session.ts';
 
 /** Fixed channel names. Only main and the preload façade know them. */
 export const CHANNELS = Object.freeze({
@@ -28,6 +28,11 @@ export const CHANNELS = Object.freeze({
   startCapture: 'xenon:v1:capture.start',
   stopCapture: 'xenon:v1:capture.stop',
   discardCapture: 'xenon:v1:capture.discard',
+  /**
+   * The user acknowledges one unknown outcome in Inspect, for a route whose
+   * card allows it (route card 07). Clears that gate only.
+   */
+  acknowledgeOutcome: 'xenon:v1:outcome.acknowledge',
   /** Main → renderer, ordered: accepted, then one terminal, then any reconcile. */
   event: 'xenon:v1:event',
 });
@@ -63,9 +68,14 @@ export interface Capabilities {
   readonly routes: readonly PublishedRoute[];
 }
 
-/** createSession result. One active session per window. */
+/**
+ * createSession result. One active session per window. `unresolved` lists
+ * every unknown outcome in the app right now (the gate is app-wide), so a
+ * reload or a later session learns that new work waits and can show Inspect.
+ */
 export interface SessionOpened extends Envelope {
   readonly capabilities: Capabilities;
+  readonly unresolved: readonly OutcomeReport[];
 }
 
 export interface CreateSessionRequest {
@@ -90,6 +100,19 @@ export type CancelDisposition = 'cancel_requested' | 'already_finished';
 
 export interface CancelResult {
   readonly disposition: CancelDisposition;
+}
+
+/**
+ * Acknowledges one unknown outcome. `jobId` is the exact ID main reported;
+ * `clientRequestId` is fresh and single-use in the session.
+ */
+export interface AcknowledgeOutcomeRequest extends Envelope {
+  readonly clientRequestId: string;
+  readonly jobId: string;
+}
+
+export interface AcknowledgeResult {
+  readonly status: 'acknowledged';
 }
 
 export interface CloseResult {
@@ -168,7 +191,7 @@ export type IpcResult<T> = { readonly ok: true; readonly value: T } | { readonly
  * Field kinds. "count" is a non-negative safe integer (revisions, epochs);
  * "text" is any string, bounded later by the route's byte limits.
  */
-export type FieldKind = 'version' | 'token' | 'nullableToken' | 'count' | 'text' | 'mode' | 'code' | 'eventType';
+export type FieldKind = 'version' | 'token' | 'nullableToken' | 'count' | 'text' | 'mode' | 'code' | 'eventType' | 'outcomeKind' | 'clearance';
 export type Schema = Readonly<Record<string, FieldKind>>;
 
 const ENVELOPE_SCHEMA = { v: 'version', sessionId: 'token', epoch: 'count' } as const;
@@ -195,7 +218,11 @@ export const REQUEST_SCHEMAS: Readonly<Record<Intent, Schema>> = Object.freeze({
   startCapture: ENVELOPE_SCHEMA,
   stopCapture: { ...ENVELOPE_SCHEMA, captureHandle: 'token' },
   discardCapture: { ...ENVELOPE_SCHEMA, captureHandle: 'token' },
+  acknowledgeOutcome: { ...ENVELOPE_SCHEMA, clientRequestId: 'token', jobId: 'token' },
 });
+
+/** Exact fields of one OutcomeReport, in SessionOpened.unresolved and the outcome.unresolved event. */
+export const OUTCOME_REPORT_SCHEMA = Object.freeze({ kind: 'outcomeKind', jobId: 'token', routeKey: 'token', sentAt: 'count', clearance: 'clearance' } as const);
 
 const EVENT_BASE = { ...ENVELOPE_SCHEMA, type: 'eventType', clientRequestId: 'token' } as const;
 
@@ -221,6 +248,8 @@ export const EVENT_SCHEMAS: Readonly<Record<MainEvent['type'], Schema>> = Object
   'transcribe.failed': { ...EVENT_BASE, jobId: 'nullableToken', code: 'code' },
   'transcribe.reconciled': { ...EVENT_BASE, jobId: 'nullableToken' },
   'capture.ended': { ...ENVELOPE_SCHEMA, type: 'eventType', captureHandle: 'token', reason: 'code' },
+  'outcome.unresolved': { ...ENVELOPE_SCHEMA, type: 'eventType', ...OUTCOME_REPORT_SCHEMA },
+  'outcome.cleared': { ...ENVELOPE_SCHEMA, type: 'eventType', kind: 'outcomeKind', jobId: 'token' },
 });
 
 /** A structured-clone-style plain object: no prototype tricks, accessors or symbols. */
@@ -258,6 +287,10 @@ function fieldMatches(kind: FieldKind, value: unknown): boolean {
       return typeof value === 'string' && value !== '';
     case 'eventType':
       return typeof value === 'string' && Object.hasOwn(EVENT_SCHEMAS, value);
+    case 'outcomeKind':
+      return (OUTCOME_KINDS as readonly unknown[]).includes(value);
+    case 'clearance':
+      return (OUTCOME_CLEARANCES as readonly unknown[]).includes(value);
   }
 }
 
@@ -278,6 +311,12 @@ export function checkSchema(value: unknown, schema: Schema): SchemaVerdict {
     if (kind === undefined || !Object.hasOwn(value, key) || !fieldMatches(kind, value[key])) return 'invalid';
   }
   return 'ok';
+}
+
+/** An outcome report with exactly its fields, as a fresh frozen copy, or null. */
+export function readOutcomeReport(value: unknown): OutcomeReport | null {
+  if (checkSchema(value, OUTCOME_REPORT_SCHEMA) !== 'ok' || !isPlainRecord(value)) return null;
+  return Object.freeze(pickSchemaFields(value, OUTCOME_REPORT_SCHEMA)) as unknown as OutcomeReport;
 }
 
 /** Copies exactly the schema's fields, so nothing else crosses the bridge. */

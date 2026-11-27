@@ -3,7 +3,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { CONTRACT_VERSION, FIXTURE_LIMITS, utf8ByteLength } from '../../src/contracts/session.ts';
-import type { MainEvent, RewriteSucceeded, RouteDescriptor } from '../../src/contracts/session.ts';
+import type { MainEvent, OutcomeReport, RewriteSucceeded, RouteDescriptor } from '../../src/contracts/session.ts';
 import {
   copyEligibility,
   createSession,
@@ -12,6 +12,7 @@ import {
   reduce,
   rewriteBlocker,
   rewriteRequest,
+  transcribeBlocker,
 } from '../../src/renderer/session.ts';
 import type { SessionAction, SessionState } from '../../src/renderer/session.ts';
 
@@ -359,6 +360,102 @@ describe('unknown outcomes', () => {
     s = run(s, failed(s, 'exploded'));
     assert.equal(s.notice, 'unknown_outcome');
     assert.equal(rewriteBlocker(s), 'unresolved_outcome');
+  });
+});
+
+describe('outcome reports (Inspect)', () => {
+  const REPORT: OutcomeReport = { kind: 'rewrite', jobId: 'j1', routeKey: 'local-base-rewrite', sentAt: 1_790_000_000_000, clearance: 'acknowledge' };
+  const unresolvedEvent = (report: OutcomeReport = REPORT, envelope: object = ENVELOPE): MainEvent =>
+    ({ ...envelope, type: 'outcome.unresolved', ...report }) as MainEvent;
+  const clearedEvent = (jobId = 'j1', kind: 'rewrite' | 'transcribe' = 'rewrite', envelope: object = ENVELOPE): MainEvent =>
+    ({ ...envelope, type: 'outcome.cleared', kind, jobId }) as MainEvent;
+  const reconciledEvent: MainEvent = { ...ENVELOPE, type: 'rewrite.reconciled', clientRequestId: 'r1', jobId: 'j1' };
+  const opened = (outcomes: readonly OutcomeReport[]) =>
+    deepFreeze(createSession({ sessionId: 's1', epoch: 1, route: ROUTE, transcribeRoute: ROUTE, outcomes }));
+
+  test('a session opened while an outcome is unknown starts gated for both kinds', () => {
+    let s = run(opened([REPORT]), edit('Meet at noon.'));
+    assert.deepEqual(s.outcomes, [REPORT]);
+    assert.equal(rewriteBlocker(s), 'unresolved_outcome');
+    assert.equal(transcribeBlocker(s), 'unresolved_outcome');
+    assert.equal(reduce(s, request('r2')), s, 'no new dispatch while main reports an unknown outcome');
+    s = run(s, clearedEvent());
+    assert.deepEqual(s.outcomes, []);
+    assert.equal(rewriteBlocker(s), null);
+    assert.equal(s.notice, 'outcome_cleared');
+  });
+
+  test('createSession keeps only well-formed reports', () => {
+    const bad = [
+      { ...REPORT, kind: 'capture' },
+      { ...REPORT, clearance: 'auto' },
+      { ...REPORT, sentAt: -1 },
+      { ...REPORT, jobId: '' },
+      { ...REPORT, extra: true },
+    ] as unknown as OutcomeReport[];
+    assert.deepEqual(opened([...bad, REPORT]).outcomes, [REPORT]);
+  });
+
+  test('an outcome.unresolved event for this session gates new work once', () => {
+    let s = run(fresh(), edit('Meet at noon.'));
+    s = run(s, unresolvedEvent());
+    assert.deepEqual(s.outcomes, [REPORT]);
+    assert.equal(rewriteBlocker(s), 'unresolved_outcome');
+    assert.equal(reduce(s, unresolvedEvent()), s, 'a duplicate report changes nothing');
+    assert.equal(reduce(s, unresolvedEvent({ ...REPORT, sentAt: 5 })), s, 'nor does a second report of the same job');
+  });
+
+  test('outcome events for another session, epoch or version are ignored', () => {
+    const s = run(fresh(), edit('Meet at noon.'));
+    for (const envelope of [{ ...ENVELOPE, sessionId: 's2' }, { ...ENVELOPE, epoch: 2 }, { ...ENVELOPE, v: 2 }]) {
+      assert.equal(reduce(s, unresolvedEvent(REPORT, envelope)), s);
+      const gated = run(s, unresolvedEvent());
+      assert.equal(reduce(gated, clearedEvent('j1', 'rewrite', envelope)), gated);
+    }
+  });
+
+  test('a malformed report is ignored', () => {
+    const s = run(fresh(), edit('Meet at noon.'));
+    assert.equal(reduce(s, unresolvedEvent({ ...REPORT, clearance: 'auto' } as unknown as OutcomeReport)), s);
+    assert.equal(reduce(s, unresolvedEvent({ ...REPORT, sentAt: 1.5 })), s);
+  });
+
+  test('outcome.cleared removes only the matching kind and job', () => {
+    const other: OutcomeReport = { ...REPORT, kind: 'transcribe', jobId: 'tj2', clearance: 'restart' };
+    let s = run(fresh(), edit('Meet at noon.'), unresolvedEvent(), unresolvedEvent(other));
+    assert.equal(reduce(s, clearedEvent('j1', 'transcribe')), s, 'wrong kind');
+    assert.equal(reduce(s, clearedEvent('j-unknown')), s, 'unknown job');
+    s = run(s, clearedEvent('j1'));
+    assert.deepEqual(s.outcomes, [other]);
+    assert.equal(rewriteBlocker(s), 'unresolved_outcome', 'the other outcome still gates');
+    assert.equal(s.notice, null, 'nothing cleared the gate yet');
+    s = run(s, clearedEvent('tj2', 'transcribe'));
+    assert.equal(rewriteBlocker(s), null);
+    assert.equal(s.notice, 'outcome_cleared');
+  });
+
+  test("this session's own unknown outcome clears only when both its request and main's report clear, in either order", () => {
+    let s = run(fresh(), edit('Meet at noon.'), request('r1'));
+    s = run(s, accepted(s, 'j1'));
+    s = run(s, failed(s, 'unknown_outcome'), unresolvedEvent());
+    assert.equal(s.notice, 'unknown_outcome');
+    for (const order of [[reconciledEvent, clearedEvent()], [clearedEvent(), reconciledEvent]]) {
+      const half = run(s, order[0] as MainEvent);
+      assert.equal(rewriteBlocker(half), 'unresolved_outcome', 'one half alone does not reopen the gate');
+      assert.equal(half.notice, 'unknown_outcome');
+      const done = run(half, order[1] as MainEvent);
+      assert.deepEqual([done.unresolved, done.outcomes], [[], []]);
+      assert.equal(rewriteBlocker(done), null);
+      assert.equal(done.notice, 'outcome_cleared');
+      assert.equal(done.transcript, 'Meet at noon.', 'the text is untouched');
+    }
+  });
+
+  test('a reconciliation that reopens the gate says so', () => {
+    let s = run(fresh(), edit('Meet at noon.'), request('r1'));
+    s = run(s, accepted(s, 'j1'));
+    s = run(s, failed(s, 'unknown_outcome'), reconciledEvent);
+    assert.equal(s.notice, 'outcome_cleared');
   });
 });
 

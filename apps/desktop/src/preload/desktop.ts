@@ -15,6 +15,8 @@ import { CONTRACT_VERSION } from '../contracts/session.ts';
 import type { Envelope, MainEvent, RewriteAccepted, RewriteRequest, TranscribeAccepted, TranscribeRequest } from '../contracts/session.ts';
 import { CHANNELS, EVENT_SCHEMAS, REQUEST_SCHEMAS, checkSchema, isPlainRecord, pickSchemaFields } from '../contracts/ipc.ts';
 import type {
+  AcknowledgeOutcomeRequest,
+  AcknowledgeResult,
   CancelRequest,
   CancelResult,
   Capabilities,
@@ -54,6 +56,8 @@ export interface DesktopApi {
   startCapture(envelope: Envelope): Promise<IpcResult<StartCaptureResult>>;
   stopCapture(request: Envelope & { readonly captureHandle: string }): Promise<IpcResult<ChooseAudioResult>>;
   discardCapture(request: Envelope & { readonly captureHandle: string }): Promise<IpcResult<DiscardCaptureResult>>;
+  /** Call only from the deliberate Acknowledge in Inspect, with the job ID main reported and a fresh request ID. */
+  acknowledgeOutcome(request: AcknowledgeOutcomeRequest): Promise<IpcResult<AcknowledgeResult>>;
   onEvent(listener: (event: MainEvent) => void): () => void;
 }
 
@@ -99,6 +103,7 @@ export function createDesktopApi(transport: PreloadTransport): DesktopApi {
     startCapture: (envelope: Envelope) => call<StartCaptureResult>('startCapture', envelope),
     stopCapture: (request: Envelope & { readonly captureHandle: string }) => call<ChooseAudioResult>('stopCapture', request),
     discardCapture: (request: Envelope & { readonly captureHandle: string }) => call<DiscardCaptureResult>('discardCapture', request),
+    acknowledgeOutcome: (request: AcknowledgeOutcomeRequest) => call<AcknowledgeResult>('acknowledgeOutcome', request),
     onEvent(listener: (event: MainEvent) => void) {
       return transport.subscribe(CHANNELS.event, (payload) => {
         const event = filterEvent(payload);

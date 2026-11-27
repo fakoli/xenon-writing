@@ -139,7 +139,7 @@ describe('transcribe intent', () => {
     h.submitted[0]?.sink.failed('unknown_outcome');
     assert.deepEqual(h.main.handle(CHANNELS.rewrite, caller, { ...rewrite, clientRequestId: 'r2' }), { ok: false, code: 'denied' });
     assert.equal(h.main.reconcile((accepted.value as TranscribeAccepted).jobId), true);
-    assert.equal(h.sent.at(-1)?.type, 'transcribe.reconciled');
+    assert.deepEqual(h.sent.slice(-2).map((e) => e.type), ['transcribe.reconciled', 'outcome.cleared']);
     assert.ok(h.main.handle(CHANNELS.rewrite, caller, { ...rewrite, clientRequestId: 'r3' }).ok);
   });
 
@@ -169,8 +169,9 @@ describe('transcribe intent', () => {
     const h = harness({ onSubmit: () => { throw new Error('synthetic adapter crash'); } });
     const token = await h.choose();
     assert.ok(h.transcribe(token).ok);
-    const last = h.sent.at(-1);
+    const [last, report] = h.sent.slice(-2);
     assert.equal(last?.type === 'transcribe.failed' ? last.code : last?.type, 'unknown_outcome');
+    assert.equal(report?.type, 'outcome.unresolved');
     const refusal = h.transcribe('not-ours', { clientRequestId: 'r-refused' });
     const sentBefore = h.sent.length;
     assert.equal(h.transcribe('not-ours', { clientRequestId: 'r-refused' }), refusal, 'the same refusal object, replayed');

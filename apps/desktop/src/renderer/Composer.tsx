@@ -6,10 +6,10 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CONTRACT_VERSION } from '../contracts/session.ts';
-import type { FailureCode, RouteDescriptor } from '../contracts/session.ts';
-import type { AudioSummary, CapabilityAction, CaptureEndReason } from '../contracts/ipc.ts';
+import type { FailureCode, MainEvent, OutcomeReport, RouteDescriptor } from '../contracts/session.ts';
+import type { AudioSummary, CapabilityAction, CaptureEndReason, PublishedRoute } from '../contracts/ipc.ts';
 import type { DesktopApi } from '../preload/desktop.ts';
-import { copyEligibility, createSession, reduce, rewriteBlocker, rewriteRequest, transcribeBlocker, transcribeRequest } from './session.ts';
+import { copyEligibility, createSession, outcomeGated, reduce, rewriteBlocker, rewriteRequest, transcribeBlocker, transcribeRequest } from './session.ts';
 import type { SessionAction, SessionState } from './session.ts';
 import { TranscriptPane } from './TranscriptPane.tsx';
 import { filledFromAudio, noticeKind } from './noticeKind.ts';
@@ -19,6 +19,8 @@ import type { JobKind } from './session.ts';
 import { DraftPane, modeLabel } from './DraftPane.tsx';
 import type { CopyOutcome } from './DraftPane.tsx';
 import { canConfirmSend, destinationText, needsSendConfirmation } from './sendConsent.ts';
+import { inspectFacts } from './inspectFacts.ts';
+import type { AcknowledgeStatus } from './Inspect.tsx';
 
 export interface SessionInit {
   readonly sessionId: string;
@@ -31,6 +33,10 @@ export interface SessionInit {
   readonly routeLocationClass?: string;
   /** What main offers this session; audio actions appear only when offered. */
   readonly actions?: readonly CapabilityAction[];
+  /** Every route main publishes, so Inspect can name the route an unknown outcome went to. */
+  readonly routes?: readonly PublishedRoute[];
+  /** Unknown outcomes already open when the session started (a reload): new work waits and Inspect is offered. */
+  readonly outcomes?: readonly OutcomeReport[];
 }
 
 /** Why an import failed, in words, with what the user can do next. */
@@ -45,6 +51,15 @@ const IMPORT_FAILURES: Partial<Record<FailureCode, string>> = {
 const TEXT_SCALES = [0.875, 1, 1.125, 1.25, 1.5, 1.75, 2] as const;
 const DEFAULT_SCALE_INDEX = 1;
 
+/**
+ * Events main sent before the Composer subscribed (after createSession replied), buffered by main.tsx.
+ * The first subscription takes them, in order, and stops the buffer.
+ */
+export interface EarlyEvents {
+  readonly events: MainEvent[];
+  stop: () => void;
+}
+
 /** Reducer state plus what the shell derives from each transition. */
 interface SessionView {
   readonly state: SessionState;
@@ -55,7 +70,7 @@ interface SessionView {
 }
 
 /** Holds the reducer state; a ref keeps event handlers on the latest state. */
-function useSession(api: DesktopApi | null, init: SessionInit) {
+function useSession(api: DesktopApi | null, init: SessionInit, early: EarlyEvents | undefined) {
   const ref = useRef<SessionView | null>(null);
   if (ref.current === null) ref.current = { state: createSession(init), kind: 'rewrite', filled: false };
   const [view, setView] = useState(ref.current);
@@ -68,7 +83,16 @@ function useSession(api: DesktopApi | null, init: SessionInit) {
     }
     return next;
   }, []);
-  useEffect(() => api?.onEvent(apply), [api, apply]);
+  useEffect(() => {
+    if (api === null) return;
+    const unsubscribe = api.onEvent(apply);
+    // Then what arrived before this subscription, oldest first. Nothing can arrive in between: both run in this one task.
+    if (early !== undefined) {
+      early.stop();
+      for (const event of early.events.splice(0)) apply(event);
+    }
+    return unsubscribe;
+  }, [api, apply, early]);
   return { ...view, apply, latest: () => (ref.current as SessionView).state };
 }
 
@@ -94,8 +118,8 @@ function useRecorder() {
   return { rec, send, current: () => ref.current };
 }
 
-export function Composer({ api, session }: { readonly api: DesktopApi | null; readonly session: SessionInit }) {
-  const { state, kind, filled, apply, latest } = useSession(api, session);
+export function Composer({ api, session, early }: { readonly api: DesktopApi | null; readonly session: SessionInit; readonly early?: EarlyEvents }) {
+  const { state, kind, filled, apply, latest } = useSession(api, session, early);
   const importing = useRef(false);
   const { rec, send, current } = useRecorder();
   const capture = api !== null && (session.actions ?? []).includes('capture');
@@ -287,6 +311,61 @@ export function Composer({ api, session }: { readonly api: DesktopApi | null; re
     }
   };
 
+  // The Inspect step (route card 07): what is known about an unknown outcome, and one explicit Acknowledge.
+  const [inspectOpen, setInspectOpen] = useState(false);
+  const [ackStatus, setAckStatus] = useState<AcknowledgeStatus>('idle');
+  const acknowledging = useRef(false);
+  const gated = outcomeGated(state);
+  const openInspect = () => {
+    setAckStatus('idle');
+    setInspectOpen(true); // the panel moves focus to its heading
+  };
+  /** Focus is on Inspect (its button or panel), or fell to the page when they went away. */
+  const focusOnInspect = () => {
+    const active = document.activeElement;
+    return active === null || active === document.body || active.id === 'inspect-button' || document.getElementById('inspect-panel')?.contains(active) === true;
+  };
+  const closeInspect = () => {
+    setInspectOpen(false);
+    // Back to the action that opened it; it may be gone if the gate cleared meanwhile.
+    (document.getElementById('inspect-button') ?? document.getElementById('source-status'))?.focus();
+  };
+  const acknowledge = async (jobId: string) => {
+    // One acknowledgment at a time: a second press (a double click or held Enter) while one is in flight does nothing.
+    if (api === null || acknowledging.current) return;
+    acknowledging.current = true;
+    setAckStatus('sending');
+    let result: Awaited<ReturnType<DesktopApi['acknowledgeOutcome']>>;
+    try {
+      // A fresh request ID per click: main refuses a reused one, and never replays an acknowledgment.
+      result = await api.acknowledgeOutcome({ ...envelope(), clientRequestId: crypto.randomUUID(), jobId });
+    } finally {
+      acknowledging.current = false;
+    }
+    if (!result.ok) {
+      setAckStatus('failed'); // focus stays on Acknowledge; the panel says new work stays paused
+      return;
+    }
+    const move = focusOnInspect();
+    setAckStatus('idle');
+    setInspectOpen(false);
+    // The status line says the gate cleared once main's events arrive. Focus moves there only from Inspect itself,
+    // never out of the editor the user went back to while waiting.
+    if (move) focusStatus();
+  };
+  // The gate opened (main's events after an acknowledgment, a reconcile, another window): close Inspect, and if focus
+  // was on it, or fell to the page when its button went away, put it on the status line, which says so.
+  const wasGated = useRef(gated);
+  useEffect(() => {
+    const reopened = wasGated.current && !gated;
+    wasGated.current = gated;
+    if (!reopened) return;
+    if (inspectOpen) setInspectOpen(false);
+    if (focusOnInspect()) focusStatus();
+  }, [gated, inspectOpen]);
+  const inspectRoutes = (session.routes ?? []).map((r) => ({ routeKey: r.routeKey, label: r.label, identity: r.identity, locationClass: r.locationClass }));
+  const reported = new Set(state.outcomes.map((o) => `${o.kind}:${o.jobId}`));
+
   /** Explicit copy of the shown draft; main holds the text and writes the clipboard. */
   const copy = async (): Promise<CopyOutcome> => {
     const { sessionId, epoch } = latest();
@@ -370,6 +449,19 @@ export function Composer({ api, session }: { readonly api: DesktopApi | null; re
                   blocker: rewriteBlocker(state),
                   onSend: confirmSend,
                   onDecline: declineSend,
+                }
+              : null
+          }
+          inspect={
+            gated
+              ? {
+                  open: inspectOpen,
+                  onOpen: openInspect,
+                  onClose: closeInspect,
+                  entries: state.outcomes.map((o) => inspectFacts(o, inspectRoutes, Date.now())),
+                  missing: state.unresolved.some((ref) => ref.jobId === null || !reported.has(`${ref.kind}:${ref.jobId}`)),
+                  status: ackStatus,
+                  onAcknowledge: (jobId) => void acknowledge(jobId),
                 }
               : null
           }

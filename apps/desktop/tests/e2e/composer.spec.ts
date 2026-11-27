@@ -32,7 +32,7 @@ const CHOSEN = { status: 'chosen', assetToken: 'a1', summary: { format: 'wav-pcm
 type Win = Window & Record<string, any>;
 
 /** Synthetic stand-in for Packet C's preload façade (`window.xenon`). */
-function installBridge({ routes, chosen, mic }: { routes: unknown[]; chosen: unknown; mic: string }) {
+function installBridge({ routes, chosen, mic, unresolved, early }: { routes: unknown[]; chosen: unknown; mic: string; unresolved: any[]; early: any[] }) {
   const w = window as Win;
   const listeners = new Set<(event: unknown) => void>();
   const ok = (value: unknown) => Promise.resolve({ ok: true, value });
@@ -54,10 +54,40 @@ function installBridge({ routes, chosen, mic }: { routes: unknown[]; chosen: unk
   w.__stopped = [];
   w.__stopResult = { ok: true, value: { status: 'chosen', assetToken: 'a2', summary: { format: 'wav-pcm16-mono-16k', durationMs: 4000, bytes: 128044 } } };
   w.__discarded = [];
+  w.__acked = [];
+  w.__ackResult = { ok: true, value: { status: 'acknowledged' } };
+  w.__ackHold = false;
+  w.__ackEventsLate = false;
+  // Unknown outcomes main would know of: { kind, jobId, clientRequestId (null for another session's) }.
+  w.__outcomes = unresolved.map((o) => ({ kind: o.kind, jobId: o.jobId, clientRequestId: null }));
   w.__emit = (event: unknown) => listeners.forEach((listener) => listener(event));
   w.xenon = {
-    createSession: () =>
-      ok({ v: 1, sessionId: 's1', epoch: 1, capabilities: { actions: ['rewrite', 'cancel', 'copyDraft', 'chooseAudio', 'transcribe', 'capture'], routes } }),
+    createSession: () => {
+      // Events main sends right after its reply, before the renderer has subscribed to anything of its own.
+      if (early.length > 0) queueMicrotask(() => early.forEach((e) => w.__emit({ v: 1, sessionId: 's1', epoch: 1, ...e })));
+      return ok({ v: 1, sessionId: 's1', epoch: 1, capabilities: { actions: ['rewrite', 'cancel', 'copyDraft', 'chooseAudio', 'transcribe', 'capture'], routes }, unresolved });
+    },
+    acknowledgeOutcome: (request: any) => {
+      w.__acked.push(request);
+      // Like main: on success the events (reconciled for this session's own request, then cleared) go out before the reply.
+      // With __ackEventsLate the reply arrives first and the test sends the events with __flushAck.
+      const answer = () => {
+        const result = w.__ackResult;
+        const known = (w.__outcomes as any[]).find((o) => o.jobId === request.jobId);
+        if (result.ok && known !== undefined) {
+          w.__outcomes = (w.__outcomes as any[]).filter((o) => o !== known);
+          const envelope = { v: 1, sessionId: 's1', epoch: 1 };
+          const events = () => {
+            if (known.clientRequestId !== null) w.__emit({ ...envelope, type: `${known.kind}.reconciled`, clientRequestId: known.clientRequestId, jobId: known.jobId });
+            w.__emit({ ...envelope, type: 'outcome.cleared', kind: known.kind, jobId: known.jobId });
+          };
+          if (w.__ackEventsLate) w.__flushAck = events;
+          else events();
+        }
+        return result;
+      };
+      return w.__ackHold ? new Promise((resolve) => (w.__answerAck = () => resolve(answer()))) : Promise.resolve(answer());
+    },
     rewrite: (request: unknown) => (w.__sent.push(request), ok({})),
     chooseAudio: () => {
       w.__chooseCalls += 1;
@@ -89,7 +119,7 @@ function installBridge({ routes, chosen, mic }: { routes: unknown[]; chosen: unk
   };
 }
 
-async function open(page: Page, opts: { bridge?: boolean; mic?: string; routes?: unknown[] } = {}) {
+async function open(page: Page, opts: { bridge?: boolean; mic?: string; routes?: unknown[]; unresolved?: unknown[]; early?: unknown[] } = {}) {
   const errors: string[] = [];
   const offsite: string[] = [];
   page.on('console', (msg) => msg.type() === 'error' && errors.push(msg.text()));
@@ -109,7 +139,15 @@ async function open(page: Page, opts: { bridge?: boolean; mic?: string; routes?:
       return route.fulfill({ status: 404 });
     }
   });
-  if (opts.bridge !== false) await page.addInitScript(installBridge, { routes: opts.routes ?? [FIXTURE_ROUTE, ASR_ROUTE], chosen: CHOSEN, mic: opts.mic ?? 'not_requested' });
+  if (opts.bridge !== false) {
+    await page.addInitScript(installBridge, {
+      routes: opts.routes ?? [FIXTURE_ROUTE, ASR_ROUTE],
+      chosen: CHOSEN,
+      mic: opts.mic ?? 'not_requested',
+      unresolved: opts.unresolved ?? [],
+      early: opts.early ?? [],
+    });
+  }
   await page.goto(`${ORIGIN}/index.html`);
   await expect(page.getByRole('heading', { name: 'Session' })).toBeVisible();
   return { errors, offsite };
@@ -1303,4 +1341,350 @@ test('importing other audio after Not now clears "nothing was sent"', async ({ p
   await importButton(page).click();
   await expect(audioStatus(page)).toHaveText('✓ Audio ready: 2.5 seconds of WAV.');
   await expect(recordStatus(page)).not.toContainText('Nothing was sent');
+});
+
+// ---------------------------------------------------------------------------
+// The Inspect step (route card 07): an unknown outcome shows what is
+// known, and one explicit Acknowledge clears it where the route's card allows.
+
+const SENT_AT = Date.UTC(2026, 10, 26, 22, 42); // 10:42 PM in UTC
+const inspectButton = (page: Page) => page.getByRole('button', { name: 'Inspect unknown outcome' });
+const inspectRegion = (page: Page) => page.getByRole('region', { name: 'Unknown outcome' });
+const acknowledgeButton = (page: Page) => page.getByRole('button', { name: 'Acknowledge', exact: true });
+const OLD_OUTCOME = { kind: 'rewrite', jobId: 'j-old', routeKey: 'local-base-rewrite', sentAt: SENT_AT, clearance: 'acknowledge' };
+
+/** Types synthetic text and sends the first rewrite to the base route, through the first-send confirmation. */
+async function sendToBase(page: Page) {
+  await transcript(page).fill('Synthetic note: meet at noon.');
+  await rewriteButton(page).click();
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  expect(await sentCount(page)).toBe(1);
+}
+
+/** Main accepts the in-flight rewrite, then reports its outcome unknown, as main does: failed, then outcome.unresolved. */
+async function unknownOutcome(page: Page, jobId = 'j1') {
+  const req = await lastSent(page);
+  const ids = { clientRequestId: req.clientRequestId, jobId };
+  await emit(page, { type: 'rewrite.accepted', ...ids, sourceRevision: req.sourceRevision, steeringRevision: req.steeringRevision });
+  await emit(page, { type: 'rewrite.failed', ...ids, code: 'unknown_outcome' });
+  await page.evaluate((o) => (window as Win).__outcomes.push(o), { kind: 'rewrite', jobId, clientRequestId: req.clientRequestId });
+  await emit(page, { type: 'outcome.unresolved', kind: 'rewrite', jobId, routeKey: 'local-base-rewrite', sentAt: SENT_AT, clearance: 'acknowledge' });
+}
+
+test.describe('Inspect', () => {
+  test.use({ timezoneId: 'UTC', locale: 'en-US' });
+  // Five minutes after the send, so the time shows alone (no date); timers keep running.
+  test.beforeEach(async ({ page }) => page.clock.setFixedTime(SENT_AT + 5 * 60_000));
+
+  test('unknown outcome → Inspect → Acknowledge → a new rewrite is sent', async ({ page }) => {
+    const { errors, offsite } = await open(page, { routes: [BASE_ROUTE, ASR_ROUTE] });
+    await sendToBase(page);
+    await unknownOutcome(page);
+    await expect(status(page)).toHaveText(
+      '⚠ Response not applied: its outcome is unknown. Your edits and the previous draft are kept. New rewrites are paused. Inspect says what is known.',
+    );
+    await expect(rewriteButton(page)).toHaveAttribute('aria-disabled', 'true');
+    await rewriteButton(page).click({ force: true });
+    expect(await sentCount(page)).toBe(1); // never a retry that bypasses the gate
+
+    // Keyboard: Inspect follows Cancel, and opening it moves focus to its heading.
+    await cancelButton(page).focus();
+    await page.keyboard.press('Tab');
+    await expect(inspectButton(page)).toBeFocused();
+    await expect(inspectButton(page)).toHaveAttribute('aria-expanded', 'false');
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('heading', { name: 'Unknown outcome' })).toBeFocused();
+    await expect(inspectButton(page)).toHaveAttribute('aria-expanded', 'true');
+    await expect(inspectButton(page)).toHaveAttribute('aria-controls', 'inspect-panel');
+    const region = inspectRegion(page);
+    await expect(page.getByRole('list', { name: 'What is known' })).toHaveText(
+      'At 10:42 PM, Xenon Writing began sending your transcript and steering to Local base model (test text only): the model mlx-community/Qwen3-4B-Instruct-2507-4bit.' +
+        'Its reply, if one came, was not applied.',
+    );
+    await expect(page.getByRole('list', { name: 'What isn’t known' })).toHaveText(
+      'Whether they arrived, and whether Local base model (test text only) produced a reply. It may have, and it may keep a copy of what it received.',
+    );
+    await expect(region).toContainText('Nothing will be sent again automatically.');
+    await expect(region).toContainText('Acknowledge to resume.');
+    await expect(acknowledgeButton(page)).toHaveAccessibleDescription(/Acknowledge to resume/);
+    // Its status line is already mounted, empty, so a screen reader announces it when it fills in.
+    await expect(page.locator('#inspect-status')).toHaveAttribute('role', 'status');
+    await expect(page.locator('#inspect-status')).toHaveText('');
+    expect(await sentCount(page)).toBe(1); // opening Inspect sends nothing
+
+    await page.keyboard.press('Tab'); // the heading → Acknowledge
+    await expect(acknowledgeButton(page)).toBeFocused();
+    await page.keyboard.press('Enter');
+    const acked = await win<any[]>(page, '__acked');
+    expect(acked).toEqual([{ v: 1, sessionId: 's1', epoch: 1, clientRequestId: expect.any(String), jobId: 'j1' }]);
+    await expect(region).toHaveCount(0);
+    await expect(inspectButton(page)).toHaveCount(0);
+    await expect(status(page)).toBeFocused();
+    await expect(status(page)).toHaveText('✓ Unknown outcome cleared. Nothing was sent again. You can rewrite when you’re ready.');
+    await expect(status(page)).toHaveAttribute('data-kind', 'success');
+    expect(await sentCount(page)).toBe(1); // acknowledging resent nothing
+
+    // A new rewrite is a fresh, deliberate request; consent was already given this session.
+    await expect(rewriteButton(page)).toHaveAttribute('aria-disabled', 'false');
+    const first = await lastSent(page);
+    await rewriteButton(page).click();
+    expect(await sentCount(page)).toBe(2);
+    const second = await lastSent(page);
+    expect(second.clientRequestId).not.toBe(first.clientRequestId);
+    expect(second.clientRequestId).not.toBe(acked[0].clientRequestId);
+    await complete(page, 'Synthetic note: meet at noon, please.', 'j2', BASE_ROUTE);
+    await expect(preview(page)).toHaveText('Synthetic note: meet at noon, please.');
+    expect(errors).toEqual([]);
+    expect(offsite).toEqual([]);
+  });
+
+  test('Close, Escape and the Inspect button itself close it, keep work paused and return focus to Inspect', async ({ page }) => {
+    await open(page, { routes: [BASE_ROUTE, ASR_ROUTE] });
+    await sendToBase(page);
+    await unknownOutcome(page);
+    await inspectButton(page).click();
+    await expect(page.getByRole('heading', { name: 'Unknown outcome' })).toBeFocused();
+    await page.getByRole('button', { name: 'Close' }).click();
+    await expect(inspectRegion(page)).toHaveCount(0);
+    await expect(inspectButton(page)).toBeFocused();
+    await expect(inspectButton(page)).toHaveAttribute('aria-expanded', 'false');
+
+    await page.keyboard.press('Enter');
+    await expect(inspectRegion(page)).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(inspectRegion(page)).toHaveCount(0);
+    await expect(inspectButton(page)).toBeFocused();
+
+    await page.keyboard.press('Enter');
+    await expect(inspectRegion(page)).toBeVisible();
+    await inspectButton(page).click(); // a disclosure: pressing it again closes
+    await expect(inspectRegion(page)).toHaveCount(0);
+
+    expect(await win<unknown[]>(page, '__acked')).toEqual([]);
+    await expect(rewriteButton(page)).toHaveAttribute('aria-disabled', 'true');
+    expect(await sentCount(page)).toBe(1);
+  });
+
+  test('a reload learns that new work is paused, and acknowledges from its new session', async ({ page }) => {
+    await open(page, { routes: [BASE_ROUTE, ASR_ROUTE], unresolved: [OLD_OUTCOME] });
+    await transcript(page).fill('Synthetic note: meet at noon.');
+    await expect(status(page)).toHaveText('⚠ New rewrites are paused because an earlier outcome is unknown. Inspect says what is known.');
+    await expect(rewriteButton(page)).toHaveAttribute('aria-disabled', 'true');
+    await importButton(page).click();
+    await expect(audioStatus(page)).toHaveText('ⓘ Audio ready: 2.5 seconds of WAV. Transcribing is paused because an earlier outcome is unknown.');
+    await expect(transcribeButton(page)).toHaveAttribute('aria-disabled', 'true');
+
+    await inspectButton(page).click();
+    await expect(inspectRegion(page)).toContainText('At 10:42 PM, Xenon Writing began sending your transcript and steering to Local base model (test text only)');
+    await acknowledgeButton(page).click();
+    expect(await win<any[]>(page, '__acked')).toEqual([{ v: 1, sessionId: 's1', epoch: 1, clientRequestId: expect.any(String), jobId: 'j-old' }]);
+    await expect(status(page)).toBeFocused();
+    await expect(status(page)).toHaveText('✓ Unknown outcome cleared. Nothing was sent again. You can rewrite when you’re ready.');
+    await expect(transcribeButton(page)).toHaveAttribute('aria-disabled', 'false');
+    // A new session asks before its first send, as always.
+    await rewriteButton(page).click();
+    await expect(sendRegion(page)).toBeVisible();
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    expect(await sentCount(page)).toBe(1);
+  });
+
+  test('an outcome only a restart clears says so and offers no Acknowledge', async ({ page }) => {
+    const restartOnly = { kind: 'transcribe', jobId: 't-old', routeKey: 'fixture-transcribe', sentAt: SENT_AT, clearance: 'restart' };
+    await open(page, { unresolved: [restartOnly] });
+    await inspectButton(page).click();
+    await expect(page.getByRole('list', { name: 'What is known' })).toContainText('At 10:42 PM, Xenon Writing began sending your audio to Synthetic fixture: the model fixture-asr-v1.');
+    await expect(page.getByRole('list', { name: 'What isn’t known' })).toHaveText('What became of it. The fixture runs inside this app, so nothing left it.');
+    await expect(inspectRegion(page)).toContainText('This route can’t be cleared here. Quit and reopen Xenon Writing to resume.');
+    await expect(inspectRegion(page).getByRole('button')).toHaveText(['Close']);
+  });
+
+  test('a refused acknowledgment keeps work paused and says so; trying again uses a fresh request ID', async ({ page }) => {
+    await open(page, { routes: [BASE_ROUTE, ASR_ROUTE] });
+    await sendToBase(page);
+    await unknownOutcome(page);
+    await page.evaluate(() => ((window as Win).__ackResult = { ok: false, code: 'denied' }));
+    await inspectButton(page).click();
+    await acknowledgeButton(page).click();
+    await expect(page.locator('#inspect-status')).toHaveText('⚠ Couldn’t acknowledge it, so new work stays paused. Try again, or quit and reopen Xenon Writing.');
+    await expect(acknowledgeButton(page)).toBeFocused();
+    await expect(acknowledgeButton(page)).toHaveAccessibleDescription(/Couldn’t acknowledge it/);
+    await expect(rewriteButton(page)).toHaveAttribute('aria-disabled', 'true');
+
+    // Closing and opening again starts afresh.
+    await page.keyboard.press('Escape');
+    await inspectButton(page).click();
+    await expect(page.locator('#inspect-status')).toHaveText('');
+    await page.evaluate(() => ((window as Win).__ackResult = { ok: true, value: { status: 'acknowledged' } }));
+    await acknowledgeButton(page).click();
+    await expect(status(page)).toHaveText('✓ Unknown outcome cleared. Nothing was sent again. You can rewrite when you’re ready.');
+    const acked = await win<any[]>(page, '__acked');
+    expect(acked).toHaveLength(2);
+    expect(acked[0].clientRequestId).not.toBe(acked[1].clientRequestId);
+  });
+
+  test('a double press of Acknowledge sends one acknowledgment', async ({ page }) => {
+    await open(page, { routes: [BASE_ROUTE, ASR_ROUTE] });
+    await sendToBase(page);
+    await unknownOutcome(page);
+    await page.evaluate(() => ((window as Win).__ackHold = true));
+    await inspectButton(page).click();
+    await acknowledgeButton(page).click();
+    await expect(acknowledgeButton(page)).toHaveAttribute('aria-disabled', 'true');
+    await expect(page.locator('#inspect-status')).toHaveText('… Acknowledging.');
+    await acknowledgeButton(page).click({ force: true });
+    await page.keyboard.press('Enter');
+    expect(await win<unknown[]>(page, '__acked')).toHaveLength(1);
+    await page.evaluate(() => (window as Win).__answerAck());
+    await expect(status(page)).toHaveText('✓ Unknown outcome cleared. Nothing was sent again. You can rewrite when you’re ready.');
+    expect(await win<unknown[]>(page, '__acked')).toHaveLength(1);
+  });
+
+  test("when main's reply arrives before its events, focus still lands on the status line, which then says the gate cleared", async ({ page }) => {
+    await open(page, { routes: [BASE_ROUTE, ASR_ROUTE] });
+    await sendToBase(page);
+    await unknownOutcome(page);
+    await page.evaluate(() => ((window as Win).__ackEventsLate = true));
+    await inspectButton(page).click();
+    await acknowledgeButton(page).click();
+    await expect(inspectRegion(page)).toHaveCount(0);
+    await expect(status(page)).toBeFocused();
+    await expect(rewriteButton(page)).toHaveAttribute('aria-disabled', 'true'); // still paused until main's events arrive
+    await page.evaluate(() => (window as Win).__flushAck());
+    await expect(status(page)).toHaveText('✓ Unknown outcome cleared. Nothing was sent again. You can rewrite when you’re ready.');
+    await expect(status(page)).toBeFocused();
+    await expect(rewriteButton(page)).toHaveAttribute('aria-disabled', 'false');
+  });
+
+  test('a gate cleared some other way while Inspect is open closes it and moves focus to the status line', async ({ page }) => {
+    await open(page, { routes: [BASE_ROUTE, ASR_ROUTE] });
+    await sendToBase(page);
+    const req = await lastSent(page);
+    await unknownOutcome(page);
+    await inspectButton(page).click();
+    await emit(page, { type: 'rewrite.reconciled', clientRequestId: req.clientRequestId, jobId: 'j1' });
+    await expect(inspectRegion(page)).toBeVisible(); // main's report still holds it
+    await emit(page, { type: 'outcome.cleared', kind: 'rewrite', jobId: 'j1' });
+    await expect(inspectRegion(page)).toHaveCount(0);
+    await expect(status(page)).toBeFocused();
+    await expect(status(page)).toHaveText('✓ Unknown outcome cleared. Nothing was sent again. You can rewrite when you’re ready.');
+    // A later unknown outcome starts with Inspect closed: it never opens by itself or takes focus.
+    await emit(page, { type: 'outcome.unresolved', ...OLD_OUTCOME });
+    await expect(inspectButton(page)).toHaveAttribute('aria-expanded', 'false');
+    await expect(inspectRegion(page)).toHaveCount(0);
+    await expect(status(page)).toBeFocused();
+  });
+
+  test('an unknown outcome without main\'s report still pauses work and offers only a restart', async ({ page }) => {
+    await open(page, { routes: [BASE_ROUTE, ASR_ROUTE] });
+    await sendToBase(page);
+    const req = await lastSent(page);
+    const ids = { clientRequestId: req.clientRequestId, jobId: 'j1' };
+    await emit(page, { type: 'rewrite.accepted', ...ids, sourceRevision: req.sourceRevision, steeringRevision: req.steeringRevision });
+    await emit(page, { type: 'rewrite.failed', ...ids, code: 'unknown_outcome' }); // and no outcome.unresolved
+    await expect(rewriteButton(page)).toHaveAttribute('aria-disabled', 'true');
+    await inspectButton(page).click();
+    await expect(inspectRegion(page)).toContainText('An earlier outcome is unknown, but its details did not arrive. Nothing will be sent again automatically. Quit and reopen Xenon Writing to resume.');
+    await expect(inspectRegion(page).getByRole('button')).toHaveText(['Close']);
+  });
+
+  test('an outcome reported before the page subscribed still pauses work', async ({ page }) => {
+    await open(page, { routes: [BASE_ROUTE, ASR_ROUTE], early: [{ type: 'outcome.unresolved', ...OLD_OUTCOME }] });
+    await transcript(page).fill('Synthetic note: meet at noon.');
+    await expect(rewriteButton(page)).toHaveAttribute('aria-disabled', 'true');
+    await expect(inspectButton(page)).toBeVisible();
+  });
+
+  test('a clearing sent before the page subscribed still reopens work', async ({ page }) => {
+    await open(page, { routes: [BASE_ROUTE, ASR_ROUTE], unresolved: [OLD_OUTCOME], early: [{ type: 'outcome.cleared', kind: 'rewrite', jobId: 'j-old' }] });
+    await transcript(page).fill('Synthetic note: meet at noon.');
+    await expect(rewriteButton(page)).toHaveAttribute('aria-disabled', 'false');
+    await expect(inspectButton(page)).toHaveCount(0);
+  });
+
+  test('when the gate clears with focus on the Inspect button, focus goes to the status line, not the page', async ({ page }) => {
+    await open(page, { routes: [BASE_ROUTE, ASR_ROUTE] });
+    await sendToBase(page);
+    const req = await lastSent(page);
+    await unknownOutcome(page);
+    await inspectButton(page).focus();
+    await emit(page, { type: 'rewrite.reconciled', clientRequestId: req.clientRequestId, jobId: 'j1' });
+    await emit(page, { type: 'outcome.cleared', kind: 'rewrite', jobId: 'j1' });
+    await expect(inspectButton(page)).toHaveCount(0);
+    await expect(status(page)).toBeFocused();
+  });
+
+  test('an acknowledgment that settles after the user went back to the editor leaves focus there', async ({ page }) => {
+    await open(page, { routes: [BASE_ROUTE, ASR_ROUTE] });
+    await sendToBase(page);
+    await unknownOutcome(page);
+    await page.evaluate(() => ((window as Win).__ackHold = true));
+    await inspectButton(page).click();
+    await acknowledgeButton(page).click();
+    await page.keyboard.press('Escape');
+    await steering(page).click();
+    await page.keyboard.type('Synthetic');
+    await page.evaluate(() => (window as Win).__answerAck());
+    await expect(status(page)).toHaveText('✓ Unknown outcome cleared. Nothing was sent again. You can rewrite when you’re ready.');
+    await expect(steering(page)).toBeFocused();
+    await page.keyboard.type(' test.');
+    await expect(steering(page)).toHaveValue('Synthetic test.');
+  });
+
+  test('while paused, an older notice that says "try again" gives way to the paused status', async ({ page }) => {
+    await open(page, { routes: [BASE_ROUTE, ASR_ROUTE] });
+    await sendToBase(page);
+    const req = await lastSent(page);
+    await emit(page, { type: 'rewrite.accepted', clientRequestId: req.clientRequestId, jobId: 'j1', sourceRevision: req.sourceRevision, steeringRevision: req.steeringRevision });
+    await emit(page, { type: 'rewrite.failed', clientRequestId: req.clientRequestId, jobId: 'j1', code: 'timed_out' });
+    await expect(status(page)).toContainText('You can try again.');
+    // Another window's job turns unknown: main reports it here too.
+    await emit(page, { type: 'outcome.unresolved', ...OLD_OUTCOME });
+    await expect(status(page)).toHaveText('⚠ New rewrites are paused because an earlier outcome is unknown. Inspect says what is known.');
+  });
+
+  test('several unknown outcomes are each named on their own Acknowledge', async ({ page }) => {
+    const later = { kind: 'transcribe', jobId: 't-two', routeKey: 'local-base-rewrite', sentAt: SENT_AT + 60_000, clearance: 'acknowledge' };
+    await open(page, { routes: [BASE_ROUTE, ASR_ROUTE], unresolved: [OLD_OUTCOME, later] });
+    await inspectButton(page).click();
+    await expect(page.getByRole('heading', { name: 'Unknown outcomes' })).toBeFocused();
+    await expect(page.getByRole('list', { name: 'What is known' })).toHaveCount(2);
+    await page.getByRole('button', { name: 'Acknowledge the rewrite started at 10:42 PM' }).click();
+    expect((await win<any[]>(page, '__acked')).map((a) => a.jobId)).toEqual(['j-old']);
+    // One remains: work stays paused and Inspect still offers it.
+    await expect(status(page)).toBeFocused();
+    await expect(status(page)).toHaveText('⚠ New rewrites are paused because an earlier outcome is unknown. Inspect says what is known.');
+    await inspectButton(page).click();
+    await expect(page.getByRole('heading', { name: 'Unknown outcome', exact: true })).toBeVisible();
+    await expect(inspectRegion(page)).toContainText('At 10:43 PM, Xenon Writing began sending your audio');
+    await expect(acknowledgeButton(page)).toBeVisible();
+  });
+
+  for (const [label, colorScheme, width] of [
+    ['light', 'light', 1280],
+    ['dark', 'dark', 1280],
+    ['light, 760 wide', 'light', 760],
+    ['dark, 760 wide', 'dark', 760],
+  ] as const) {
+    test(`no accessibility violations with Inspect open, and after a refusal (${label})`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme });
+      await page.setViewportSize({ width, height: 760 });
+      await open(page, { routes: [BASE_ROUTE, ASR_ROUTE], unresolved: [OLD_OUTCOME] });
+      const scan = () => new AxeBuilder({ page }).setLegacyMode().withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+      expect((await scan()).violations).toEqual([]);
+      await inspectButton(page).click();
+      await expect(inspectRegion(page)).toBeVisible();
+      expect((await scan()).violations).toEqual([]);
+      await page.evaluate(() => ((window as Win).__ackResult = { ok: false, code: 'denied' }));
+      await acknowledgeButton(page).click();
+      await expect(page.locator('#inspect-status')).toBeVisible();
+      expect((await scan()).violations).toEqual([]);
+      // Nothing in the panel is clipped or scrolls sideways at this width, even at the largest text size.
+      const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      expect(await overflow()).toBeLessThanOrEqual(0);
+      const larger = page.getByRole('button', { name: 'A+ Increase text size' });
+      while ((await larger.getAttribute('aria-disabled')) !== 'true') await larger.click();
+      expect(await overflow()).toBeLessThanOrEqual(0);
+      expect((await scan()).violations).toEqual([]);
+    });
+  }
 });

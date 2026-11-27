@@ -92,7 +92,7 @@ const CONFIRM_BLOCKER_TEXT: Record<TranscribeBlocker, string> = {
   pending: 'Transcribing waits until the current job ends.',
   candidate_open: 'Transcribing waits until the waiting transcript is replaced or kept.',
   awaiting_cancellation: 'Transcribing waits for the cancelled job to finish.',
-  unresolved_outcome: 'Transcribing is paused until an unknown outcome is reconciled.',
+  unresolved_outcome: 'Transcribing is paused because an earlier outcome is unknown. Inspect says what is known.',
   no_route: 'No transcription route is set up.',
 };
 

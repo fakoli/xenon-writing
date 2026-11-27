@@ -11,7 +11,11 @@
  *
  * Running jobs and unknown outcomes are tracked app-wide, not per session: a
  * reload or a new session must not start a second job or slip past an
- * unresolved outcome.
+ * unresolved outcome. Every open session is told about each unknown outcome
+ * (an `outcome.unresolved` event, and `SessionOpened.unresolved` for sessions
+ * opened later), so the gate is never invisible. It clears only through
+ * main-side `reconcile`, or the user's acknowledgment in Inspect for a route
+ * whose card allows it (route card 07); see acknowledgmentRefusal.
  *
  * Electron is not imported. App wiring must:
  * - register `invoke` for each channel via `ipcMain.handle`, converting the
@@ -27,6 +31,7 @@ import { CONTRACT_VERSION, isFailureCode, utf8ByteLength } from '../contracts/se
 import type {
   FailureCode,
   MainEvent,
+  OutcomeReport,
   RewriteAccepted,
   RewriteFailed,
   RewriteSucceeded,
@@ -37,6 +42,7 @@ import type {
 } from '../contracts/session.ts';
 import { CAPTURE_END_REASONS, CAPTURE_UNAVAILABLE_REASONS, CHANNELS, MICROPHONE_STATES, REQUEST_SCHEMAS, checkSchema, isPlainRecord, pickSchemaFields } from '../contracts/ipc.ts';
 import type {
+  AcknowledgeResult,
   CancelResult,
   Capabilities,
   CaptureEndReason,
@@ -125,6 +131,15 @@ export interface DesktopMainOptions {
   readonly capture?: CapturePort;
   /** Timers for the capture backstop and stop timeout; tests pass a fake clock. */
   readonly clock?: Clock;
+  /** Wall-clock time in ms, stamped on each accepted job for Inspect; tests pass a fixed one. */
+  readonly now?: () => number;
+  /**
+   * Route keys whose card lets the user acknowledge an unknown outcome
+   * (today only route card 07's `local-base-rewrite`). Each must
+   * be a registered route that is not a fixture, or creation throws. Every
+   * other route's unknown outcome clears only through `reconcile` or a restart.
+   */
+  readonly acknowledgeRoutes?: readonly string[];
 }
 
 export interface DesktopMain {
@@ -145,8 +160,11 @@ export interface DesktopMain {
   handle(channel: string, caller: Caller | null, payload: unknown): IpcResult<unknown>;
   /**
    * Main-side only, never renderer-invokable: an unknown outcome was
-   * independently reconciled. Clears that gate, even if its session has
-   * closed, and tells the session if it is still open.
+   * independently reconciled (for a future route with receipts). Clears that
+   * gate, even if its session has closed, tells that session if it is still
+   * open, and tells every open session the gate cleared. The renderer's
+   * `acknowledgeOutcome` clears a gate the same way, but only for a route in
+   * `acknowledgeRoutes`.
    */
   reconcile(jobId: string): boolean;
 }
@@ -162,6 +180,8 @@ interface JobRecord {
   readonly accepted: RewriteAccepted | TranscribeAccepted;
   /** For transcriptions: the asset being transcribed. */
   readonly assetToken?: string;
+  /** When main accepted the job and handed it to its route (ms since the Unix epoch). */
+  readonly acceptedAt: number;
   /** A terminal outcome has been recorded; later ones are duplicates. */
   finished: boolean;
   cancelRequested: boolean;
@@ -198,6 +218,38 @@ function withinBytes(text: string, maxBytes: number): boolean {
   return text.length <= maxBytes && utf8ByteLength(text) <= maxBytes;
 }
 
+/** What main knows when an acknowledgment arrives; see acknowledgmentRefusal. */
+export interface AcknowledgmentFacts {
+  /** The acknowledgment's request ID was already used in this session, by any request. */
+  readonly requestIdUsed: boolean;
+  /** The named job is an unknown outcome main reported and has not cleared. */
+  readonly unresolved: boolean;
+  /** That job's route card lets the user acknowledge (today only route card 07). */
+  readonly acknowledgeable: boolean;
+  /** Jobs still running, app-wide. */
+  readonly running: number;
+}
+
+/**
+ * Why an acknowledgment is refused, or null to accept it. Every refusal has
+ * no side effect.
+ * - A reused request ID → denied. An acknowledgment is single-use and never
+ *   replayed: its effect is reported as events, so a replay has nothing to add.
+ * - A job that is not a current unknown outcome (a wrong, cleared or never
+ *   issued ID) → denied.
+ * - A route whose card does not allow acknowledgment → unsupported.
+ * - Any job still running → denied. One job runs at a time and none starts
+ *   while an outcome is unknown, so today no intent can reach this; it keeps
+ *   the rule if concurrency ever changes.
+ */
+export function acknowledgmentRefusal(facts: AcknowledgmentFacts): FailureCode | null {
+  if (facts.requestIdUsed) return 'denied';
+  if (!facts.unresolved) return 'denied';
+  if (!facts.acknowledgeable) return 'unsupported';
+  if (facts.running > 0) return 'denied';
+  return null;
+}
+
 /** Normalizes an Electron IpcMainInvokeEvent, structurally. Null if unusable. */
 export function callerFromElectronEvent(event: unknown): Caller | null {
   try {
@@ -217,7 +269,16 @@ export function callerFromElectronEvent(event: unknown): Caller | null {
 export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
   const { policy, jobs, clipboard, send } = options;
   const clock = options.clock ?? systemClock;
+  const now = options.now ?? (() => Date.now());
   const registry = createSessionRegistry(options.newId);
+  /** Routes whose unknown outcomes the user may acknowledge. Fixed at startup. */
+  const acknowledgeable = new Set<string>();
+  for (const key of options.acknowledgeRoutes ?? []) {
+    const route = policy.routes.find((r) => r.routeKey === key);
+    // A fixture never leaves the process, so its unknown outcome is main's own fault: it stays until a restart.
+    if (route === undefined || route.mode === 'fixture') throw new Error('acknowledgeRoutes may name only registered, non-fixture routes');
+    acknowledgeable.add(key);
+  }
   /** Jobs without a terminal outcome yet, across all sessions and windows. */
   const running = new Map<string, JobRecord>();
   /** Jobs whose outcome is unknown. New rewrites wait until main reconciles them. */
@@ -234,6 +295,34 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
     } catch {
       // A window that cannot receive is closing; its lifecycle hook cleans up.
     }
+  }
+
+  /** Sends one event, addressed to each, to every open session. */
+  function broadcast(build: (session: Session) => MainEvent): void {
+    for (const session of registry.openSessions()) deliver(session, build(session));
+  }
+
+  /** The acceptance time as a non-negative safe integer, as the event schema requires. */
+  function stamp(): number {
+    const t = now();
+    return Number.isSafeInteger(t) && t >= 0 ? t : 0;
+  }
+
+  function outcomeReport(job: JobRecord): OutcomeReport {
+    const clearance = acknowledgeable.has(job.route.routeKey) ? 'acknowledge' : 'restart';
+    return { kind: job.kind, jobId: job.jobId, routeKey: job.route.routeKey, sentAt: job.acceptedAt, clearance };
+  }
+
+  /**
+   * Clears one unknown outcome: its own session, if still open, gets the
+   * reconciled event for its request; then every open session hears the gate cleared.
+   */
+  function clearGate(job: JobRecord): void {
+    unresolved.delete(job.jobId);
+    const { session } = job;
+    const settled = { ...envelope(session), clientRequestId: job.clientRequestId, jobId: job.jobId };
+    deliver(session, job.kind === 'rewrite' ? { ...settled, type: 'rewrite.reconciled' } : { ...settled, type: 'transcribe.reconciled' });
+    broadcast((s) => ({ ...envelope(s), type: 'outcome.cleared', kind: job.kind, jobId: job.jobId }));
   }
 
   function requestCancel(job: JobRecord): void {
@@ -262,11 +351,15 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
     return { actions, routes: policy.routes };
   }
 
-  /** Stores a request's first result, evicting the oldest settled record past the cap. */
+  /**
+   * Stores a request's first result, evicting the oldest settled record past
+   * the cap. A running job's record is kept, and so is an unknown outcome's:
+   * once it is acknowledged, an identical retry must still replay, not dispatch again.
+   */
   function remember(session: Session, clientRequestId: string, record: RequestRecord): void {
     if (session.requests.size >= MAX_REQUEST_RECORDS) {
       for (const [id, old] of session.requests) {
-        if (old.jobId === null || !running.has(old.jobId)) {
+        if (old.jobId === null || (!running.has(old.jobId) && !unresolved.has(old.jobId))) {
           session.requests.delete(id);
           break;
         }
@@ -294,6 +387,12 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
       const event: RewriteFailed | TranscribeFailed =
         job.kind === 'rewrite' ? { ...base, type: 'rewrite.failed', code: safe } : { ...base, type: 'transcribe.failed', code: safe };
       settle(event);
+      // After the job's own terminal, every open session (its own, a reload, another window) learns
+      // that new work waits, with what Inspect shows. Unless it already cleared meanwhile.
+      if (safe === 'unknown_outcome' && unresolved.get(job.jobId) === job) {
+        const report = outcomeReport(job);
+        broadcast((s) => ({ ...envelope(s), type: 'outcome.unresolved', ...report }));
+      }
     }
 
     return {
@@ -411,6 +510,7 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
       session,
       accepted,
       assetToken: payload.assetToken as string,
+      acceptedAt: stamp(),
       finished: false,
       cancelRequested: false,
     };
@@ -469,6 +569,7 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
       route: admitted,
       session,
       accepted,
+      acceptedAt: stamp(),
       finished: false,
       cancelRequested: false,
     };
@@ -495,6 +596,33 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
     if (job === undefined) return ok({ disposition: 'already_finished' });
     requestCancel(job);
     return ok({ disposition: 'cancel_requested' });
+  }
+
+  /**
+   * The user acknowledges one unknown outcome in Inspect (route card 07).
+   * Accepted only for the exact job ID main reported, on a route
+   * whose card allows it, with nothing running and a fresh request ID; see
+   * acknowledgmentRefusal. Any session may acknowledge, because the gate is
+   * app-wide and main reported the job to every session.
+   */
+  function acknowledgeOutcome(session: Session, fields: Record<string, unknown>): IpcResult<AcknowledgeResult> {
+    const clientRequestId = fields.clientRequestId as string;
+    const job = unresolved.get(fields.jobId as string);
+    const refusal = acknowledgmentRefusal({
+      requestIdUsed: session.requests.has(clientRequestId),
+      unresolved: job !== undefined,
+      acknowledgeable: job !== undefined && acknowledgeable.has(job.route.routeKey),
+      running: running.size,
+    });
+    if (refusal !== null || job === undefined) return rejected(refusal ?? 'denied');
+    const result = ok<AcknowledgeResult>({ status: 'acknowledged' });
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify({ intent: 'acknowledgeOutcome', ...pickSchemaFields(fields, REQUEST_SCHEMAS.acknowledgeOutcome) }))
+      .digest('hex');
+    // Recorded so the ID stays used: a later rewrite under it is a conflict, a later acknowledgment a replay.
+    remember(session, clientRequestId, { fingerprint, result, jobId: null });
+    clearGate(job);
+    return result;
   }
 
   function copyDraft(session: Session, payload: Record<string, unknown>): IpcResult<CopyResult> {
@@ -788,7 +916,8 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
       const current = registry.current(call.caller.windowId);
       if (current !== null) closeSession(current);
       const session = registry.open(call.caller.windowId);
-      const opened: SessionOpened = { ...envelope(session), capabilities: capabilities() };
+      // Every unknown outcome in the app, so a reload or later session shows that work waits and can reach Inspect.
+      const opened: SessionOpened = { ...envelope(session), capabilities: capabilities(), unresolved: [...unresolved.values()].map(outcomeReport) };
       return ok(opened);
     }
 
@@ -818,6 +947,8 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
       case 'startCapture':
       case 'stopCapture':
         return rejected('unsupported'); // async: only through invoke()
+      case 'acknowledgeOutcome':
+        return acknowledgeOutcome(session, fields);
     }
   }
 
@@ -837,10 +968,7 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
     reconcile(jobId) {
       const job = unresolved.get(jobId);
       if (job === undefined) return false;
-      unresolved.delete(jobId);
-      const { session } = job;
-      const event = { ...envelope(session), clientRequestId: job.clientRequestId, jobId };
-      deliver(session, job.kind === 'rewrite' ? { ...event, type: 'rewrite.reconciled' } : { ...event, type: 'transcribe.reconciled' });
+      clearGate(job);
       return true;
     },
   };

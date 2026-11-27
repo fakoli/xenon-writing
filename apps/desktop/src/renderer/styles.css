@@ -193,4 +193,9 @@ button[aria-disabled='true'] {
   border-radius: var(--radius);
 }
 .explain h3 { font-size: var(--text-body); margin: 0; }
+/* Inspect (an unknown outcome): the same bordered region, with short labelled lists. */
+.inspect-outcome { display: grid; gap: var(--space-2); }
+.inspect h4 { font-size: var(--text-body); margin: 0; }
+.inspect ul { margin: 0; padding-inline-start: 1.25em; }
+.inspect li + li { margin-block-start: var(--space-1); }
 .timer { font-variant-numeric: tabular-nums; font-size: var(--text-editor); margin: 0; }

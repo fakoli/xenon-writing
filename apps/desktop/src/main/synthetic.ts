@@ -16,7 +16,7 @@ import { createJobRunner, createTranscribeRunner } from './jobs.ts';
 import type { AudioChooserPort } from './platform/media.ts';
 import type { FixtureProvider, FixtureTranscriber } from './providers/fixture.ts';
 import { createFixtureRewriteProvider, createFixtureTranscriber } from './providers/fixture.ts';
-import { BASE_REWRITE_ROUTE, createBaseRewriteProvider } from './providers/baseRewriteRoute.ts';
+import { BASE_REWRITE_ROUTE, baseRewriteAcknowledgeable, createBaseRewriteProvider } from './providers/baseRewriteRoute.ts';
 import type { ChatTransport } from './providers/chatRewrite.ts';
 import { FIXTURE_REWRITE_ROUTE, FIXTURE_TRANSCRIBE_ROUTE, createRoutePolicy } from './routePolicy.ts';
 import type { CapturePort, MicrophonePort } from './platform/capture.ts';
@@ -27,6 +27,8 @@ export interface SyntheticMainOptions {
   readonly clipboard: ClipboardPort;
   readonly clock?: Clock;
   readonly newId?: IdSource;
+  /** Wall-clock time stamped on accepted jobs for Inspect. */
+  readonly now?: () => number;
   readonly fixtureDelayMs?: number;
   readonly timeoutMs?: number;
   /** Platform audio chooser; without it, audio import is not offered. */
@@ -62,6 +64,10 @@ export function createSyntheticMain(options: SyntheticMainOptions): SyntheticMai
     clipboard: options.clipboard,
     send: options.send,
     newId: options.newId,
+    now: options.now,
+    // Route card 07: its service keeps no receipts, so the user acknowledges an unknown outcome
+    // in Inspect. A deviation, acceptable only while the route is synthetic-only. Fixture routes never may.
+    acknowledgeRoutes: base !== null && baseRewriteAcknowledgeable() ? [BASE_REWRITE_ROUTE.routeKey] : [],
   });
   return { main, fixture, transcriber };
 }

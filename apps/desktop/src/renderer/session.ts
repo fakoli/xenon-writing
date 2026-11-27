@@ -16,14 +16,21 @@
  * - A transcript never overwrites existing text without explicit Replace.
  * - Output is promoted only when its echoed revisions, route identity and
  *   session all match the request snapshot and the inputs have not changed.
- * - An unknown downstream outcome blocks new rewrites until main reconciles it.
+ * - An unknown downstream outcome blocks new rewrites until main clears it
+ *   (reconciled, or acknowledged by the user in Inspect where the route allows).
+ *   Main reports every unknown outcome in the app to every session, so one from
+ *   before a reload gates this session too.
  * - Unmatched events and no-op intents return the same state object.
  */
 import { CONTRACT_VERSION, isFailureCode, isToken, utf8ByteLength } from '../contracts/session.ts';
+import { readOutcomeReport } from '../contracts/ipc.ts';
 import type {
   Envelope,
   FailureCode,
   MainEvent,
+  OutcomeCleared,
+  OutcomeReport,
+  OutcomeUnresolved,
   RewriteAccepted,
   RewriteFailed,
   RewriteRequest,
@@ -85,8 +92,11 @@ export interface Draft {
   readonly steeringRevision: number;
 }
 
-/** Safe status for the last attempt; never provider text or raw errors. */
-export type NoticeCode = FailureCode | 'result_outdated';
+/**
+ * Safe status for the last attempt; never provider text or raw errors.
+ * `outcome_cleared`: the last unknown outcome's gate just cleared, so new work may start.
+ */
+export type NoticeCode = FailureCode | 'result_outdated' | 'outcome_cleared';
 
 export interface SessionState {
   readonly sessionId: string;
@@ -107,6 +117,12 @@ export interface SessionState {
   readonly notice: NoticeCode | null;
   /** Attempts with unknown downstream outcome; each blocks new rewrites. */
   readonly unresolved: readonly JobRef[];
+  /**
+   * Every unknown outcome main reports in the app, this session's or not (a
+   * job from before a reload, another window's). Each blocks new work and is
+   * what Inspect shows; only main's outcome.cleared removes one.
+   */
+  readonly outcomes: readonly OutcomeReport[];
   /**
    * Locally cancelled attempts still awaiting their terminal event from main.
    * Their downstream outcome is unknown, so they also block new rewrites.
@@ -145,6 +161,8 @@ export function createSession(init: {
   readonly epoch: number;
   readonly route: RouteDescriptor | null;
   readonly transcribeRoute?: RouteDescriptor | null;
+  /** SessionOpened.unresolved: unknown outcomes already open when the session started. */
+  readonly outcomes?: readonly OutcomeReport[];
 }): SessionState {
   return {
     sessionId: init.sessionId,
@@ -162,6 +180,7 @@ export function createSession(init: {
     draft: null,
     notice: null,
     unresolved: [],
+    outcomes: withOutcomes([], init.outcomes ?? []),
     abandoned: [],
     requestIds: [],
   };
@@ -204,7 +223,11 @@ export function reduce(state: SessionState, action: SessionAction): SessionState
     case 'transcribe.succeeded':
     case 'transcribe.failed':
     case 'transcribe.reconciled':
-      return isForSession(state, action) ? applyMainEvent(state, action) : state;
+      return isForSession(state, action) ? reopenNotice(state, applyMainEvent(state, action)) : state;
+    case 'outcome.unresolved':
+      return isForSession(state, action) ? reportOutcome(state, action) : state;
+    case 'outcome.cleared':
+      return isForSession(state, action) ? reopenNotice(state, clearOutcome(state, action)) : state;
     default:
       return state;
   }
@@ -222,13 +245,18 @@ export type RewriteBlocker =
   | 'transcript_too_large'
   | 'steering_too_large';
 
+/** Whether any unknown outcome, this session's own or one main reported, holds new work back. */
+export function outcomeGated(state: SessionState): boolean {
+  return state.unresolved.length > 0 || state.outcomes.length > 0;
+}
+
 /** Why Rewrite is disabled, or null when it may be requested. */
 export function rewriteBlocker(state: SessionState): RewriteBlocker | null {
   const route = state.route;
   if (route === null) return 'no_route';
   if (state.pending !== null || state.transcription !== null) return 'pending';
   if (state.abandoned.length > 0) return 'awaiting_cancellation';
-  if (state.unresolved.length > 0) return 'unresolved_outcome';
+  if (outcomeGated(state)) return 'unresolved_outcome';
   if (state.transcript.trim() === '') return 'empty_transcript';
   if (utf8ByteLength(state.transcript) > route.limits.transcriptBytes) return 'transcript_too_large';
   if (utf8ByteLength(state.steering) > route.limits.steeringBytes) return 'steering_too_large';
@@ -259,7 +287,7 @@ export function transcribeBlocker(state: SessionState): TranscribeBlocker | null
   if (state.transcribeRoute === null) return 'no_route';
   if (state.pending !== null || state.transcription !== null) return 'pending';
   if (state.abandoned.length > 0) return 'awaiting_cancellation';
-  if (state.unresolved.length > 0) return 'unresolved_outcome';
+  if (outcomeGated(state)) return 'unresolved_outcome';
   if (state.candidate !== null) return 'candidate_open';
   return null;
 }
@@ -421,11 +449,38 @@ function cancelTranscription(state: SessionState, clientRequestId: string): Sess
 // ---------------------------------------------------------------------------
 // Main-process events
 
+/** Adds well-formed reports not already held (by kind and job ID). */
+function withOutcomes(held: readonly OutcomeReport[], reports: readonly unknown[]): readonly OutcomeReport[] {
+  let next = held;
+  for (const raw of reports) {
+    const report = readOutcomeReport(raw);
+    if (report !== null && !next.some((o) => o.kind === report.kind && o.jobId === report.jobId)) next = [...next, report];
+  }
+  return next;
+}
+
+function reportOutcome(state: SessionState, event: OutcomeUnresolved): SessionState {
+  const { kind, jobId, routeKey, sentAt, clearance } = event;
+  const outcomes = withOutcomes(state.outcomes, [{ kind, jobId, routeKey, sentAt, clearance }]);
+  return outcomes === state.outcomes ? state : { ...state, outcomes };
+}
+
+function clearOutcome(state: SessionState, event: OutcomeCleared): SessionState {
+  const outcomes = state.outcomes.filter((o) => !(o.kind === event.kind && o.jobId === event.jobId));
+  return outcomes.length === state.outcomes.length ? state : { ...state, outcomes };
+}
+
+/** When an event opens the gate (no unknown outcome left), the notice says so, so the user knows work may resume. */
+function reopenNotice(prev: SessionState, next: SessionState): SessionState {
+  if (next === prev || !outcomeGated(prev) || outcomeGated(next)) return next;
+  return { ...next, notice: 'outcome_cleared' };
+}
+
 function eventKind(event: MainEvent): JobKind {
   return event.type.startsWith('transcribe.') ? 'transcribe' : 'rewrite';
 }
 
-function applyMainEvent(state: SessionState, event: MainEvent): SessionState {
+function applyMainEvent(state: SessionState, event: Exclude<MainEvent, OutcomeUnresolved | OutcomeCleared>): SessionState {
   // Capture events carry no request or job ID, so they never settle an attempt.
   if (event.type === 'capture.ended') return state;
   const kind = eventKind(event);

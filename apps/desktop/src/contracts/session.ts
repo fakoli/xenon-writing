@@ -183,6 +183,48 @@ export interface CaptureEnded extends Envelope {
   readonly reason: 'max_duration' | 'device_lost' | 'revoked';
 }
 
+/** Which processing job an unknown outcome belongs to. */
+export const OUTCOME_KINDS = ['rewrite', 'transcribe'] as const;
+export type OutcomeKind = (typeof OUTCOME_KINDS)[number];
+
+/**
+ * How an unknown outcome's gate can clear, from its route card:
+ * - "acknowledge": the user acknowledges it in Inspect (route card 07: the
+ *   service keeps no receipts to reconcile against);
+ * - "restart": nothing in the app clears it; quitting does, because the gate
+ *   lives in memory. Every route without a card that allows acknowledgment,
+ *   fixture routes included.
+ */
+export const OUTCOME_CLEARANCES = ['acknowledge', 'restart'] as const;
+export type OutcomeClearance = (typeof OUTCOME_CLEARANCES)[number];
+
+/**
+ * What main knows about one unknown outcome, reported to every session so a
+ * reload or a later session can show Inspect. Never text, a draft or a reply.
+ */
+export interface OutcomeReport {
+  readonly kind: OutcomeKind;
+  /** The main-issued job ID; an acknowledgment must name exactly this. */
+  readonly jobId: string;
+  readonly routeKey: string;
+  /** When main accepted the job and handed it to its route, in ms since the Unix epoch. */
+  readonly sentAt: number;
+  readonly clearance: OutcomeClearance;
+}
+
+/** Main → renderer: an outcome became unknown somewhere in the app, so new work waits. */
+export interface OutcomeUnresolved extends Envelope, OutcomeReport {
+  readonly type: 'outcome.unresolved';
+}
+
+/** Main → renderer: that outcome's gate cleared (acknowledged or reconciled). */
+export interface OutcomeCleared extends Envelope {
+  readonly type: 'outcome.cleared';
+  readonly kind: OutcomeKind;
+  readonly jobId: string;
+}
+
 export type RewriteEvent = RewriteAccepted | RewriteSucceeded | RewriteFailed | OutcomeReconciled;
 export type TranscribeEvent = TranscribeAccepted | TranscribeSucceeded | TranscribeFailed | TranscribeReconciled;
-export type MainEvent = RewriteEvent | TranscribeEvent | CaptureEnded;
+export type OutcomeEvent = OutcomeUnresolved | OutcomeCleared;
+export type MainEvent = RewriteEvent | TranscribeEvent | CaptureEnded | OutcomeEvent;

@@ -72,6 +72,8 @@ export interface SessionRegistry {
   find(windowId: number, sessionId: unknown, epoch: unknown): Session | null;
   /** Main-side lookup of an open session by ID, for reconciliation. */
   lookup(sessionId: string): Session | null;
+  /** Every open session, across windows, for app-wide reports such as unknown outcomes. */
+  openSessions(): Session[];
   /** Closes the session, revokes its handles and bumps the window's epoch. */
   close(session: Session): void;
   /** Forgets the window entirely; returns the session it closed, if any. */
@@ -159,6 +161,12 @@ export function createSessionRegistry(newId: IdSource = randomId): SessionRegist
         if (state.session !== null && state.session.open && state.session.sessionId === sessionId) return state.session;
       }
       return null;
+    },
+
+    openSessions() {
+      const open: Session[] = [];
+      for (const state of windows.values()) if (state.session !== null && state.session.open) open.push(state.session);
+      return open;
     },
 
     close,

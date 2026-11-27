@@ -43,6 +43,15 @@ export function baseRewriteEnabled(env: Readonly<Record<string, string | undefin
   return env[ROUTE_SWITCH.name] === ROUTE_SWITCH.value;
 }
 
+/**
+ * Decision 6: the user may acknowledge this route's unknown outcomes only
+ * while the route accepts synthetic text alone (the threat model weighs why). Without
+ * the marker, acknowledgment turns off and an unknown outcome waits for a restart.
+ */
+export function baseRewriteAcknowledgeable(settings: { readonly requireMarker?: string } = BASE_REWRITE_SETTINGS): boolean {
+  return settings.requireMarker === 'synthetic';
+}
+
 export function createBaseRewriteProvider(transport: ChatTransport): ChatRewriteProvider {
   return createChatRewriteProvider({ route: BASE_REWRITE_ROUTE, ...BASE_REWRITE_SETTINGS, transport });
 }
