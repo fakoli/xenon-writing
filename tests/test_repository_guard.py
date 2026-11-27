@@ -25,7 +25,8 @@ class GuardTests(unittest.TestCase):
     def test_history_skips_local_stash(self):
         token='gh'+'p_'+'a'*36
         with tempfile.TemporaryDirectory() as tmp:
-            env={**os.environ,'GIT_CONFIG_GLOBAL':os.devnull,'GIT_CONFIG_NOSYSTEM':'1','GIT_AUTHOR_NAME':'t','GIT_AUTHOR_EMAIL':'t@example.invalid','GIT_COMMITTER_NAME':'t','GIT_COMMITTER_EMAIL':'t@example.invalid'}
+            # Drop the caller's GIT_* variables (a hook sets GIT_DIR) so git acts only on the throwaway repository.
+            env={**{k:v for k,v in os.environ.items() if not k.startswith('GIT_')},'GIT_CONFIG_GLOBAL':os.devnull,'GIT_CONFIG_NOSYSTEM':'1','GIT_AUTHOR_NAME':'t','GIT_AUTHOR_EMAIL':'t@example.invalid','GIT_COMMITTER_NAME':'t','GIT_COMMITTER_EMAIL':'t@example.invalid'}
             def run(*args):subprocess.run(['git',*args],cwd=tmp,env=env,check=True,capture_output=True)
             def scan():return subprocess.run([sys.executable,str(SCRIPT),'--history'],cwd=tmp,env=env,capture_output=True,text=True)
             run('init','-q','-b','main')

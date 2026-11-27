@@ -56,8 +56,8 @@ MIN_TERM_CHARS = 6
 MAX_TERM_CHARS = 48
 
 # The public layout. Anything else fails, in any letter case. A new top-level
-# file, tool or app config file lands in two pull requests: this allowlist
-# first, then the file.
+# file, tool or app config file, or a new file type in the app's source or
+# tests, lands in two pull requests: this allowlist first, then the file.
 ALLOWED_ROOT_FILES = {'.gitignore', 'AGENTS.md', 'CONTRIBUTING.md', 'LICENSE', 'PUBLIC_BOUNDARY.md', 'README.md'}
 ALLOWED_FILES = {
     'tools/check_public_boundary.py', 'tools/check_repository.py', 'tools/install_hooks.sh',

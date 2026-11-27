@@ -1,7 +1,6 @@
 /**
- * Generated, non-personal audio fixtures. The delivery plan asks for a generated
- * `noon.wav`; it is built here at test time instead of being
- * committed as a binary. It is a plain sine tone with no speech or recording.
+ * Generated, non-personal audio fixtures. The `noon.wav` fixture is built here
+ * at test time instead of being committed as a binary. It is a plain sine tone with no speech or recording.
  */
 export interface WavOptions {
   readonly durationMs?: number;

@@ -53,7 +53,7 @@ class TermList(unittest.TestCase):
             del os.environ[boundary.TERM_COUNT_ENV]
 
     def test_missing_list_fails_closed(self):
-        env = {k: v for k, v in os.environ.items() if k != boundary.TERMS_ENV}
+        env = {k: v for k, v in os.environ.items() if k != boundary.TERMS_ENV and not k.startswith('GIT_')}
         env[boundary.TERMS_FILE_ENV] = '/nonexistent/terms'
         result = subprocess.run(['python3', str(TOOLS / 'check_public_boundary.py'), '--tree'], env=env,
                                 capture_output=True, text=True)
@@ -174,7 +174,9 @@ class Repo(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name) / 'repo'
         self.repo.mkdir()
-        self.env = {**os.environ, boundary.TERMS_ENV: TERM_LIST, 'GIT_CONFIG_GLOBAL': os.devnull,
+        # Drop the caller's GIT_* variables (a hook sets GIT_DIR) so git acts only on the throwaway repository.
+        inherited = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+        self.env = {**inherited, boundary.TERMS_ENV: TERM_LIST, 'GIT_CONFIG_GLOBAL': os.devnull,
                     'GIT_CONFIG_NOSYSTEM': '1', 'GIT_AUTHOR_NAME': 'fakoli', 'GIT_AUTHOR_EMAIL': boundary.ALLOWED_EMAIL,
                     'GIT_COMMITTER_NAME': 'fakoli', 'GIT_COMMITTER_EMAIL': boundary.ALLOWED_EMAIL}
         self.git('init', '-q', '-b', 'main')
