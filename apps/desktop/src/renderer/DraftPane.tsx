@@ -39,16 +39,15 @@ export function DraftPane({
     const handle = eligibility.draftHandle;
     setCopied({ handle, outcome: await onCopy() });
   };
-  const identity =
-    draft !== null
-      ? `${modeLabel(draft.mode)} · ${draft.identity}`
-      : state.route !== null
-        ? `${modeLabel(state.route.mode)} · ${state.route.identity}`
-        : 'No processing route';
+  // The exact model, not the route's name: the header names the route and where it runs (UI review).
+  // A draft can only come from the session's route (main and the reducer refuse any other mode or identity).
+  // Fixture output still says it is synthetic here, next to the draft, since the header scrolls away.
+  const source = draft ?? state.route;
+  const model = source === null ? null : source.mode === 'fixture' ? `Model: ${source.identity} (synthetic)` : `Model: ${source.identity}`;
   return (
     <section className="pane draft" aria-labelledby="draft-heading">
       <h2 id="draft-heading">Draft</h2>
-      <p className="identity">{identity}</p>
+      {model === null ? null : <p className="identity">{model}</p>}
       <p id="preview-label" className="preview-label">
         {status === 'previous' ? 'Previous draft' : status === 'current' ? 'Current draft' : 'Draft preview'}
       </p>

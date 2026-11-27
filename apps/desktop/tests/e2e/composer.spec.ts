@@ -232,7 +232,7 @@ async function complete(page: Page, text: string, jobId = 'j1', route: { mode: s
 test('keyboard-only journey from empty session to a reviewable draft', async ({ page }) => {
   const { errors, offsite } = await open(page);
   await expect(preview(page)).toHaveText('Nothing generated yet');
-  await expect(page.getByText('Synthetic fixture · fixture-v1')).toBeVisible();
+  await expect(page.locator('.identity')).toHaveText('Model: fixture-v1 (synthetic)');
 
   // Logical order: text size, audio, transcript, steering, rewrite, cancel, preview, copy.
   const order = ['A− Decrease text size', 'A+ Increase text size', 'Import audio', 'Record', 'Transcribe', 'Transcript', 'Steering (optional)', 'Rewrite', 'Cancel'];
@@ -738,9 +738,205 @@ for (const colorScheme of ['light', 'dark'] as const) {
   });
 }
 
+
+/** Rendered copy and accessible names use typographic apostrophes, quotes and ellipses (UI review). */
+async function expectTypographicCopy(page: Page) {
+  const copy = await page.evaluate(() =>
+    [document.body.innerText, ...Array.from(document.querySelectorAll('[aria-label], [title]'), (el) => `${el.getAttribute('aria-label') ?? ''} ${el.getAttribute('title') ?? ''}`)].join('\n'),
+  );
+  expect(copy).not.toMatch(/['"]|\.\.\./);
+}
+
+/** Computed font sizes of each heading level, the body text and the editor, in px. */
+function typeSizes(page: Page) {
+  return page.evaluate(() => {
+    const px = (selector: string) => parseFloat(getComputedStyle(document.querySelector(selector)!).fontSize);
+    return {
+      rem: px('html'),
+      h1: px('h1'),
+      h2: px('#source-heading'),
+      h2Draft: px('#draft-heading'),
+      h3s: Array.from(document.querySelectorAll('h3'), (h) => parseFloat(getComputedStyle(h).fontSize)),
+      body: px('#audio-status'),
+      editor: px('#transcript'),
+    };
+  });
+}
+
+for (const width of [1280, 320]) {
+  test(`headings are a type scale above the body text, at default and largest size, ${width}px wide (UI review)`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 760 });
+    await open(page);
+    // The transcript candidate and the explanation bring two h3s on screen.
+    await transcript(page).fill('Meet at noon.');
+    await transcribed(page, await startTranscription(page), 'Meet at one.');
+    await expect(candidate(page)).toBeVisible();
+    await recordButton(page).click();
+    await expect(explanation(page)).toBeVisible();
+    const bigger = page.getByRole('button', { name: 'Increase text size' });
+    for (const scale of ['default', 'largest']) {
+      if (scale === 'largest') while ((await bigger.getAttribute('aria-disabled')) !== 'true') await bigger.click();
+      const s = await typeSizes(page);
+      expect(s.h3s, scale).toHaveLength(2);
+      // Exact steps in rem, so they grow with A+ ...
+      expect([s.h1 / s.rem, s.h2 / s.rem, s.h2Draft / s.rem, ...s.h3s.map((h3) => h3 / s.rem)], scale).toEqual([1.75, 1.5, 1.5, 1.25, 1.25]);
+      // ... each level above the next, every heading above the body text, and a pane heading above its editors' text.
+      expect(s.h1, scale).toBeGreaterThan(s.h2);
+      for (const h3 of s.h3s) {
+        expect(s.h2, scale).toBeGreaterThan(h3);
+        expect(h3, scale).toBeGreaterThan(s.body);
+      }
+      expect(s.h2, scale).toBeGreaterThan(s.editor);
+      // Nothing is pushed sideways: no page scroll, and no heading wider than its box.
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), scale).toBeLessThanOrEqual(0);
+      const overflowing = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('h1, h2, h3'))
+          .filter((h) => h.scrollWidth > h.clientWidth || h.getBoundingClientRect().right > document.documentElement.clientWidth)
+          .map((h) => h.textContent),
+      );
+      expect(overflowing, scale).toEqual([]);
+    }
+  });
+}
+
+test('at 320px with the largest text, a long model name wraps instead of widening the page', async ({ page }) => {
+  const base = { ...FIXTURE_ROUTE, routeKey: 'local-base-rewrite', mode: 'base', identity: 'mlx-community/Qwen3-4B-Instruct-2507-4bit', label: 'Local base model (test text only)', locationClass: 'local' };
+  await page.setViewportSize({ width: 320, height: 640 });
+  await open(page, { routes: [base, ASR_ROUTE] });
+  const bigger = page.getByRole('button', { name: 'Increase text size' });
+  while ((await bigger.getAttribute('aria-disabled')) !== 'true') await bigger.click();
+  const sideways = () =>
+    page.evaluate(() => ({
+      page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      past: Array.from(document.querySelectorAll('.app *'))
+        .filter((el) => el.getBoundingClientRect().right > document.documentElement.clientWidth + 0.5)
+        .map((el) => `${el.tagName.toLowerCase()}#${el.id}.${el.getAttribute('class') ?? ''}`),
+    }));
+  // The Draft pane's model line, and the send confirmation that names the same model.
+  await expect(page.locator('.identity')).toHaveText('Model: mlx-community/Qwen3-4B-Instruct-2507-4bit');
+  expect(await sideways()).toEqual({ page: 0, past: [] });
+  await transcript(page).fill('Synthetic note: meet at noon.');
+  await rewriteButton(page).click();
+  await expect(sendRegion(page)).toBeVisible();
+  expect(await sideways()).toEqual({ page: 0, past: [] });
+});
+
+for (const colorScheme of ['light', 'dark'] as const) {
+  test(`the empty preview is muted but readable, and a draft is not (${colorScheme}; UI review)`, async ({ page }) => {
+    await page.emulateMedia({ colorScheme });
+    await open(page);
+    // The preview has no fill of its own, so its text sits on the page background.
+    expect(await preview(page).evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgba(0, 0, 0, 0)');
+    const page_bg = over(await page.evaluate(() => getComputedStyle(document.body).backgroundColor), [255, 255, 255]);
+    const text = over(await page.evaluate(() => getComputedStyle(document.body).color), page_bg);
+    const empty = page.locator('.preview .empty');
+    await expect(empty).toHaveText('Nothing generated yet');
+    const look = await empty.evaluate((el) => ({ color: getComputedStyle(el).color, style: getComputedStyle(el).fontStyle }));
+    const hint = over(look.color, page_bg);
+    expect(look.style).toBe('italic');
+    expect(hint).not.toEqual(text);
+    // Muted: clearly lower contrast than the body text, but still 4.5:1 or more.
+    expect(contrast(hint, page_bg)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(hint, page_bg)).toBeLessThan(contrast(text, page_bg) * 0.75);
+    // A real draft is in the full text color.
+    await transcript(page).fill('Meet at noon.');
+    await rewriteButton(page).click();
+    await complete(page, 'Meet at noon, please.');
+    await expect(preview(page)).toHaveText('Meet at noon, please.');
+    expect(over(await preview(page).evaluate((el) => getComputedStyle(el).color), page_bg)).toEqual(text);
+  });
+}
+
+/** Each corner radius in the page that is not zero, with the element it is on. */
+function cornerRadii(page: Page) {
+  return page.evaluate(() => {
+    // The token as a computed length, so a token in rem would still compare.
+    const probe = document.body.appendChild(document.createElement('div'));
+    probe.style.borderTopLeftRadius = 'var(--radius)';
+    const token = getComputedStyle(probe).borderTopLeftRadius;
+    probe.remove();
+    const corners = ['borderTopLeftRadius', 'borderTopRightRadius', 'borderBottomLeftRadius', 'borderBottomRightRadius'] as const;
+    const rounded: { what: string; radius: string }[] = [];
+    for (const el of Array.from(document.querySelectorAll('body *'))) {
+      const style = getComputedStyle(el);
+      for (const corner of corners) {
+        if (style[corner] !== '0px') rounded.push({ what: `${el.tagName.toLowerCase()}.${el.getAttribute('class') ?? ''}`, radius: style[corner] });
+      }
+    }
+    return { token, rounded };
+  });
+}
+
+test('every rounded corner uses the one radius token (UI review)', async ({ page }) => {
+  await open(page);
+  const seen = new Set<string>();
+  const check = async (state: string) => {
+    const { token, rounded } = await cornerRadii(page);
+    expect(token, state).not.toBe('0px');
+    expect(rounded.filter((r) => r.radius !== token), state).toEqual([]);
+    for (const r of rounded) seen.add(r.what);
+  };
+  await check('empty');
+  await transcript(page).fill('Meet at noon.');
+  await rewriteButton(page).click();
+  await complete(page, 'Meet at noon, please.');
+  await transcribed(page, await startTranscription(page), 'Meet at one.');
+  await expect(candidate(page)).toBeVisible();
+  await check('candidate');
+  await page.getByRole('button', { name: 'Keep existing' }).click();
+  await recordButton(page).click();
+  await expect(explanation(page)).toBeVisible();
+  await check('explanation');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('timer')).toBeVisible();
+  await check('recording');
+  // Buttons (Discard too), both editors, the preview, the candidate and the explanation are all rounded.
+  for (const kind of ['button.', 'button.primary', 'button.danger', 'textarea.editor', 'div.preview', 'section.candidate', 'section.explain']) {
+    expect([...seen], kind).toContain(kind);
+  }
+});
+
+/** The words on each rendered line of an element, top to bottom. */
+function wrappedLines(page: Page, selector: string) {
+  return page.locator(selector).evaluate((el) => {
+    const words: { word: string; top: number }[] = [];
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      for (const match of node.textContent!.matchAll(/\S+/g)) {
+        const range = document.createRange();
+        range.setStart(node, match.index);
+        range.setEnd(node, match.index + match[0].length);
+        words.push({ word: match[0], top: Math.round(range.getBoundingClientRect().top) });
+      }
+    }
+    const lines = new Map<number, string[]>();
+    for (const { word, top } of words) lines.set(top, [...(lines.get(top) ?? []), word]);
+    return [...lines.values()];
+  });
+}
+
+test('wrapped notices leave no word alone on their last line, even at 320px with the largest text (UI review)', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await open(page);
+  // Status lines are balanced; the explanations' longer paragraphs are wrapped "pretty".
+  const wrapStyles = await page.evaluate(() => Array.from(document.querySelectorAll('.status'), (el) => getComputedStyle(el).textWrapStyle));
+  expect(new Set(wrapStyles)).toEqual(new Set(['balance']));
+  const bigger = page.getByRole('button', { name: 'Increase text size' });
+  while ((await bigger.getAttribute('aria-disabled')) !== 'true') await bigger.click();
+  // With plain wrapping these two left "chosen." and "rewrite." alone on the last line.
+  for (const selector of ['#audio-status', '#source-status']) {
+    const lines = await wrappedLines(page, selector);
+    expect(lines.length, selector).toBeGreaterThan(1);
+    expect(lines.at(-1)!.length, `${selector}: ${lines.map((l) => l.join(' ')).join(' / ')}`).toBeGreaterThan(1);
+  }
+  await recordButton(page).click();
+  await expect(explanation(page)).toBeVisible();
+  expect(await page.locator('#explain-text').evaluate((el) => getComputedStyle(el).textWrapStyle)).toBe('pretty');
+});
+
 for (const [label, colorScheme, width] of [
-  ['light', 'light', 1100],
-  ['dark', 'dark', 1100],
+  ['light, 1280 wide', 'light', 1280],
+  ['dark, 1280 wide', 'dark', 1280],
   ['light, 760 wide', 'light', 760],
   ['dark, 760 wide', 'dark', 760],
 ] as const) {
@@ -754,7 +950,12 @@ for (const [label, colorScheme, width] of [
 async function accessibilityJourney(page: Page) {
   await open(page);
   // Legacy mode scans in-page, so the same check also runs inside Electron windows.
-  const scan = () => new AxeBuilder({ page }).setLegacyMode().withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+  const axe = () => new AxeBuilder({ page }).setLegacyMode().withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+  // Each state also checks its copy for straight quotes (UI review).
+  const scan = async () => {
+    await expectTypographicCopy(page);
+    return axe();
+  };
   expect((await scan()).violations).toEqual([]);
   await transcript(page).fill('Meet at noon.');
   await rewriteButton(page).click();
@@ -787,7 +988,30 @@ test('the header names the rewrite route by its label, so a base route says "tes
   };
   await open(page, { routes: [base, ASR_ROUTE] });
   await expect(page.locator('.route-summary')).toHaveText('Local base model (test text only)');
-  await expect(page.getByText('Base model · mlx-community/Qwen3-4B-Instruct-2507-4bit')).toBeVisible();
+  await expect(page.locator('.identity')).toHaveText('Model: mlx-community/Qwen3-4B-Instruct-2507-4bit');
+  // The route is named once, in the header; the Draft pane gives only the exact model (UI review).
+  expect(await occurrences(page, 'Local base model (test text only)')).toBe(1);
+  expect(await occurrences(page, 'base model')).toBe(1); // inside the header's label, nowhere else
+});
+
+/** How many times a phrase appears in the page's rendered text, ignoring case. */
+function occurrences(page: Page, phrase: string) {
+  return page.evaluate((p) => document.body.innerText.toLowerCase().split(p.toLowerCase()).length - 1, phrase);
+}
+
+test('the rewrite route is named once, in the header, empty and with a draft (UI review)', async ({ page }) => {
+  await open(page);
+  const check = async () => {
+    expect(await occurrences(page, 'Synthetic fixture')).toBe(1);
+    await expect(page.locator('.route-summary')).toHaveText('Synthetic fixture');
+    await expect(page.locator('.identity')).toHaveText('Model: fixture-v1 (synthetic)');
+  };
+  await check();
+  await transcript(page).fill('Meet at noon.');
+  await rewriteButton(page).click();
+  await complete(page, 'Meet at noon, please.');
+  await expect(preview(page)).toHaveText('Meet at noon, please.');
+  await check();
 });
 
 const BASE_ROUTE = {
@@ -877,7 +1101,10 @@ test('the send confirmation has no accessibility violations, and the fixture rou
 
 test('without a bridge the shell says no route and never offers rewrite', async ({ page }) => {
   const { errors } = await open(page, { bridge: false });
-  await expect(page.getByText('No processing route').first()).toBeVisible();
+  // Said in the header (and why in the status line), not again in the Draft pane, which has no model to name.
+  await expect(page.locator('.route-summary')).toHaveText('No processing route');
+  await expect(page.locator('.pane.draft')).not.toContainText('processing route');
+  await expect(page.locator('.identity')).toHaveCount(0);
   await transcript(page).fill('Meet at noon.');
   await expect(rewriteButton(page)).toBeDisabled();
   await expect(status(page)).toContainText('no processing route is set up yet');

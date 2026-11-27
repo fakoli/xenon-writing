@@ -165,7 +165,7 @@ test('the built app exposes only the façade and publishes the fixture routes; r
     require: 'undefined',
     process: 'undefined',
   });
-  await expect(page.getByText('Synthetic fixture · fixture-v1')).toBeVisible();
+  await expect(page.locator('.identity')).toHaveText('Model: fixture-v1 (synthetic)');
   await expect(page.getByRole('button', { name: 'Import audio' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Transcribe' })).toBeVisible();
   // No outcome is unknown in a fresh app, so nothing is paused and Inspect is not offered.

@@ -36,6 +36,11 @@
   --space-4: 1rem;
   --text-body: 1.125rem; /* 18px at default scale */
   --text-editor: 1.25rem; /* 20px */
+  /* Headings: each level a step above the text under it (about 1.2 apart), so none is body-sized. */
+  --text-h3: 1.25rem; /* 20px */
+  --text-h2: 1.5rem; /* 24px */
+  --text-h1: 1.75rem; /* 28px */
+  /* The one corner radius, for every rounded control and panel. */
   --radius: 4px;
 }
 @media (prefers-color-scheme: dark) {
@@ -51,6 +56,27 @@
 }
 
 * { box-sizing: border-box; }
+
+/* The type scale (UI review). Balanced lines, and a long word breaks rather than widening the page. */
+h1,
+h2,
+h3 {
+  margin: 0;
+  line-height: 1.25;
+  text-wrap: balance;
+  overflow-wrap: break-word;
+}
+h1 { font-size: var(--text-h1); }
+h2 { font-size: var(--text-h2); }
+h3 { font-size: var(--text-h3); }
+
+/*
+ * No single word alone on the last line of a notice (UI review). Status lines are short, so they are
+ * balanced: Chromium's `pretty` gives up in a narrow column with large text, `balance` does not (up to
+ * six lines). The longer explanations use `pretty`, which keeps their lines full.
+ */
+.status { text-wrap: balance; }
+.explain p { text-wrap: pretty; }
 
 body {
   margin: 0;
@@ -73,7 +99,6 @@ body {
 }
 
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
-.toolbar h1 { font-size: var(--text-editor); margin: 0; }
 .route-summary { margin: 0; flex: 1 1 auto; }
 .text-size { display: flex; gap: var(--space-2); }
 
@@ -84,11 +109,14 @@ body {
 
 /* Each pane keeps about 72 characters a line, also in the one-column layout below 920px. */
 .pane { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; max-inline-size: 41rem; }
-.pane h2 { font-size: var(--text-body); margin: 0; }
 /* Group each label with its own field: more room above a label than between it and its field. */
 .pane > label,
 .pane > .preview-label { margin-block-start: var(--space-2); }
 .pane p { margin: 0; }
+/* A long model name (no spaces) wraps rather than widening the page at 320px with large text. */
+.identity,
+.status,
+.explain p { overflow-wrap: anywhere; }
 
 .editor,
 .preview {
@@ -103,7 +131,8 @@ body {
 }
 .editor { resize: vertical; background: Field; color: FieldText; }
 .preview { min-height: 12em; white-space: pre-wrap; }
-.preview .empty { font-style: italic; }
+/* The empty state is a hint, not a draft: muted (6.48:1 in light, 8.64:1 in dark) and italic. */
+.preview .empty { font-style: italic; color: var(--muted); }
 
 .actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 
@@ -163,7 +192,6 @@ button[aria-disabled='true'] {
   border: 2px solid CanvasText;
   border-radius: var(--radius);
 }
-.candidate h3 { font-size: var(--text-body); margin: 0; }
 .candidate-text { font-size: var(--text-editor); white-space: pre-wrap; overflow-wrap: anywhere; }
 .visually-hidden {
   position: absolute;
@@ -192,10 +220,9 @@ button[aria-disabled='true'] {
   border: 2px solid CanvasText;
   border-radius: var(--radius);
 }
-.explain h3 { font-size: var(--text-body); margin: 0; }
-/* Inspect (an unknown outcome): the same bordered region, with short labelled lists. */
+/* Inspect (an unknown outcome): the same bordered region, with short labelled lists. Its h4s sit a step below h3. */
 .inspect-outcome { display: grid; gap: var(--space-2); }
-.inspect h4 { font-size: var(--text-body); margin: 0; }
+.inspect h4 { font-size: var(--text-body); line-height: 1.25; margin: 0; }
 .inspect ul { margin: 0; padding-inline-start: 1.25em; }
 .inspect li + li { margin-block-start: var(--space-1); }
 .timer { font-variant-numeric: tabular-nums; font-size: var(--text-editor); margin: 0; }
