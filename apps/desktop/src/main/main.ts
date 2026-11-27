@@ -12,7 +12,7 @@
  * sandboxed and context-isolated, with no Node integration, no navigation or
  * new windows, and no permission except the capture window's microphone.
  */
-import { app, BrowserWindow, clipboard, ipcMain, session } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, nativeTheme, session } from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { CHANNELS } from '../contracts/ipc.ts';
@@ -59,6 +59,13 @@ for (const [intent, channel] of Object.entries(CHANNELS)) {
   if (intent !== 'event') ipcMain.handle(channel, (event, payload: unknown) => desktop.invoke(channel, callerFromElectronEvent(event), payload));
 }
 
+/**
+ * Until the page first paints, a window shows its own background, white by default: a white flash
+ * before every dark-mode launch (measured in the desktop README's evidence). Use the page's own
+ * background instead, Chromium's Canvas color: #121212 in dark, white in light.
+ */
+const windowBackground = () => (nativeTheme.shouldUseDarkColors ? '#121212' : '#ffffff');
+
 function createWindow(): void {
   const window = new BrowserWindow({
     width: 1100,
@@ -66,6 +73,7 @@ function createWindow(): void {
     minWidth: 320,
     minHeight: 480,
     title: 'Xenon Writing',
+    backgroundColor: windowBackground(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       sandbox: true,
@@ -86,6 +94,10 @@ function createWindow(): void {
   });
   contents.on('render-process-gone', () => desktop.windowNavigated(id));
   contents.on('destroyed', () => desktop.windowClosed(id));
+  // Follow a change of appearance while open (a resize shows the window's background before the page repaints).
+  const followAppearance = () => window.setBackgroundColor(windowBackground());
+  nativeTheme.on('updated', followAppearance);
+  window.on('closed', () => nativeTheme.off('updated', followAppearance));
   void window.loadURL(url);
 }
 

@@ -18,8 +18,15 @@ import { noonWav } from '../fixtures/wav.ts';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const APP_DIR = path.resolve(HERE, '../..');
 const TRAP = path.join(HERE, 'offline-trap.cjs');
+// For tests tagged @dark-launch or @light-launch: that system appearance when the window opens (see the file's header).
+const LAUNCH_APPEARANCE = path.join(HERE, 'launch-appearance.cjs');
 
-type MainGlobals = typeof globalThis & { __offlineHits: string[]; __copied: string[]; __dialog?: unknown };
+type MainGlobals = typeof globalThis & {
+  __offlineHits: string[];
+  __copied: string[];
+  __dialog?: unknown;
+  __windowBackgrounds?: { id: number; background: string }[];
+};
 
 function withoutRouteSwitch(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const copy = { ...env };
@@ -37,14 +44,22 @@ test.beforeEach(async () => {
   dir = mkdtempSync(path.join(tmpdir(), 'xenon-offline-'));
   hitsFile = path.join(dir, 'hits.log');
   errors = [];
+  const appearance = ['dark', 'light'].find((a) => test.info().tags.includes(`@${a}-launch`));
   app = await electron.launch({
     // The trap loads before the app's main module, the way Playwright loads its own hook. Chromium's fake
     // input device means no test ever opens a real microphone (macOS's permission state is stubbed per test).
-    args: ['-r', TRAP, '--use-fake-device-for-media-stream', APP_DIR],
+    args: ['-r', TRAP, ...(appearance === undefined ? [] : ['-r', LAUNCH_APPEARANCE]), '--use-fake-device-for-media-stream', APP_DIR],
     // Never inherit route card 07's switch from the shell: this test runs the fixture routes only.
-    env: { ...withoutRouteSwitch(process.env), XENON_OFFLINE_PROFILE: path.join(dir, 'profile'), XENON_OFFLINE_HITS: hitsFile },
+    env: {
+      ...withoutRouteSwitch(process.env),
+      XENON_OFFLINE_PROFILE: path.join(dir, 'profile'),
+      XENON_OFFLINE_HITS: hitsFile,
+      ...(appearance === undefined ? {} : { XENON_TEST_APPEARANCE: appearance }),
+    },
     // Keep Chromium's OS sandbox on Linux too (Playwright turns it off there by default).
     chromiumSandbox: true,
+    // Playwright would force a light scheme on the page; like the real app, follow the system appearance.
+    colorScheme: null,
   });
   const watched = new WeakSet<Page>();
   const watch = (p: Page) => {
@@ -152,6 +167,63 @@ test('the trap is armed: network, DNS, session and process entry points are caug
 test('the app runs on a throwaway profile, not the developer\'s', async () => {
   const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
   expect(userData).toBe(path.join(dir, 'profile'));
+});
+
+/** A window background as Electron reports it (`#RRGGBB`), in the page's computed `rgb()` form. */
+function asRgb(hex: string): string {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+test('the window\'s own background is the page\'s, so a launch never flashes another color', async () => {
+  // Whatever the system appearance on this machine, before the first paint the window shows what the page will.
+  const window = await app.browserWindow(page);
+  const background = asRgb(await window.evaluate((w) => w.getBackgroundColor()));
+  expect(background).toBe(await page.evaluate(() => getComputedStyle(document.body).backgroundColor));
+});
+
+/** The main window's background one tick after it was created, as launch-appearance.cjs recorded it. */
+async function backgroundAtCreation(): Promise<string> {
+  const id = await (await app.browserWindow(page)).evaluate((w) => w.webContents.id);
+  const created = await app.evaluate(() => (globalThis as MainGlobals).__windowBackgrounds ?? []);
+  const first = created.find((w) => w.id === id);
+  expect(first, 'the main window was recorded at creation').toBeDefined();
+  return asRgb(first!.background);
+}
+
+// Whatever this machine's appearance, these two launches see a dark and a light system when the window opens.
+test('a launch in a dark system starts dark, before the page paints, and then follows the appearance', { tag: '@dark-launch' }, async () => {
+  expect(await backgroundAtCreation()).toBe('rgb(18, 18, 18)');
+  // While open, the window's background follows the page's. Dark first: the simulated reading ended one tick
+  // after creation, and on a light machine only a real change of appearance (there, to dark) fires 'updated'.
+  const window = await app.browserWindow(page);
+  const pageBackground = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+  const windowBackground = async () => asRgb(await window.evaluate((w) => w.getBackgroundColor()));
+  for (const [theme, rgb] of [['dark', 'rgb(18, 18, 18)'], ['light', 'rgb(255, 255, 255)'], ['dark', 'rgb(18, 18, 18)']] as const) {
+    await app.evaluate(({ nativeTheme }, source) => {
+      nativeTheme.themeSource = source;
+    }, theme);
+    await expect.poll(pageBackground, theme).toBe(rgb);
+    await expect.poll(windowBackground, theme).toBe(rgb);
+  }
+});
+
+test('a launch in a light system starts light', { tag: '@light-launch' }, async () => {
+  expect(await backgroundAtCreation()).toBe('rgb(255, 255, 255)');
+});
+
+test('a closed window stops following the appearance', async () => {
+  // Elsewhere closing the last window quits the app; on macOS, the only target, the app stays open.
+  test.skip(process.platform !== 'darwin', 'closing the last window quits the app on this platform');
+  const following = () => app.evaluate(({ nativeTheme }) => nativeTheme.listenerCount('updated'));
+  const before = await following();
+  const window = await app.browserWindow(page);
+  await window.evaluate((w) => new Promise<void>((resolve) => (w.once('closed', () => resolve()), w.close())));
+  expect(await following()).toBe(before - 1);
+  // A change of appearance afterwards reaches no destroyed window.
+  await app.evaluate(({ nativeTheme }) => {
+    nativeTheme.themeSource = nativeTheme.shouldUseDarkColors ? 'light' : 'dark';
+  });
 });
 
 test('the built app exposes only the façade and publishes the fixture routes; recording only on macOS', async () => {

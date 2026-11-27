@@ -26,7 +26,7 @@ const ENTRY_ALLOWANCES: Readonly<Record<string, readonly string[]>> = {
   'main/providers/loopbackHttp.ts': ['node:http'],
 };
 const ELECTRON_BINDINGS: Readonly<Record<string, readonly string[]>> = {
-  'main/main.ts': ['app', 'BrowserWindow', 'clipboard', 'ipcMain', 'session'],
+  'main/main.ts': ['app', 'BrowserWindow', 'clipboard', 'ipcMain', 'nativeTheme', 'session'],
   'preload/preload.ts': ['contextBridge', 'ipcRenderer'],
   'main/platform/electronChooser.ts': ['BrowserWindow', 'dialog'],
   'main/platform/electronCapture.ts': ['BrowserWindow', 'ipcMain', 'systemPreferences'],
