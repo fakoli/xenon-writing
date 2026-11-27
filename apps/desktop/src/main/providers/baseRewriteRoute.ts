@@ -44,7 +44,7 @@ export function baseRewriteEnabled(env: Readonly<Record<string, string | undefin
 }
 
 /**
- * Decision 6: the user may acknowledge this route's unknown outcomes only
+ * The user may acknowledge this route's unknown outcomes (its card's choice) only
  * while the route accepts synthetic text alone (the threat model weighs why). Without
  * the marker, acknowledgment turns off and an unknown outcome waits for a restart.
  */
